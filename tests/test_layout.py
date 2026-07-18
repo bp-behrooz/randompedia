@@ -184,6 +184,42 @@ def test_toc_has_one_entry_per_article_not_per_spine_item(
     )
 
 
+def test_nav_and_ncx_exist_but_are_not_in_the_reading_flow(tmp_path: Path):
+    """The nav and NCX must exist as manifest items (EPUB 3 requires nav,
+    and capable readers use them to render a TOC menu) — but they must
+    NOT be spine items. CrossPoint has no interactive TOC, so a spine
+    entry pointing at nav would force readers to page through thousands
+    of link-only entries before reaching the first article."""
+    out = tmp_path / "nav_placement.epub"
+    articles = [_art(with_image=False) for _ in range(3)]
+    build_epub(articles=articles, output_path=out, meta=_meta(),
+               with_images=False)
+
+    with zipfile.ZipFile(out) as zf:
+        opf = zf.read("EPUB/content.opf").decode("utf-8")
+
+    # Nav exists in the manifest.
+    assert re.search(r'<item[^>]*\bproperties="nav"', opf), (
+        "EPUB 3 requires a nav document in the manifest"
+    )
+    assert re.search(r'<item[^>]*\bid="ncx"', opf), (
+        "NCX should also be present for EPUB 2 readers"
+    )
+
+    # But NEITHER appears in the spine.
+    spine_ids = re.findall(r'<itemref[^>]*\bidref="([^"]+)"', opf)
+    assert "nav" not in spine_ids, (
+        f"nav must not be in the spine (would waste hundreds of pages on "
+        f"CrossPoint). spine={spine_ids}"
+    )
+    assert "ncx" not in spine_ids
+
+    # First spine item should be the colophon (users open on 'About this book').
+    assert spine_ids[0] == "colophon", (
+        f"expected spine to start on colophon, got {spine_ids[0]}"
+    )
+
+
 def test_layout_order_within_cover(tmp_path: Path, monkeypatch):
     """Cover: h1 → desc → image, in that order."""
     from randompedia import epub_build

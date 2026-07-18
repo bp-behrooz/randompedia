@@ -235,7 +235,14 @@ def build_epub(
     book.toc = (colophon, *toc_entries)
     book.add_item(epub.EpubNcx())
     book.add_item(epub.EpubNav())
-    book.spine = ["nav", colophon, *spine_items]
+    # The nav and NCX stay in the manifest (spec-required for EPUB 3;
+    # capable readers surface them as a TOC menu), but we deliberately
+    # OMIT them from the spine — CrossPoint has no interactive TOC and
+    # would otherwise force readers to page through thousands of link-
+    # only entries before reaching the first article. Starting the spine
+    # at the colophon means CrossPoint opens on it, and page-forward
+    # goes straight into the shuffled articles.
+    book.spine = [colophon, *spine_items]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     log.info("serializing epub to %s...", output_path)
