@@ -1,9 +1,16 @@
 name: _build-epub
 
-# Reusable workflow. Called four times from build.yml — once per
-# (count, variant) combination. Extracted so the top-level file expresses
-# only the dependency graph (text -> images per count), not the details
-# of how a single EPUB gets built.
+# Reusable workflow. Called once per article count from build.yml. Builds
+# BOTH the text and images EPUB back-to-back in the same job so:
+#
+#   * the summaries.sqlite that text just populated is reused in-process
+#     by the images step (no cache round-trip needed);
+#   * only ONE cache save happens per size, eliminating the parallel-save
+#     race we'd get if text and images were separate jobs.
+#
+# Sizes are chained largest -> smallest in build.yml, and share a single
+# cache key per language. 10k's cache is a strict superset of 5k's and
+# 1k's (same seed, same lang), so 5k and 1k are near-instant restores.
 
 on:
   workflow_call:
@@ -16,14 +23,6 @@ on:
         description: "Number of articles."
         required: true
         type: number
-      variant:
-        description: "text or images."
-        required: true
-        type: string
-      with_images:
-        description: "Include lead images."
-        required: true
-        type: boolean
       lang:
         required: true
         type: string
@@ -34,6 +33,15 @@ on:
         required: false
         type: boolean
         default: false
+      cache_key:
+        description: "Shared cache primary key (same across all sizes)."
+        required: true
+        type: string
+      cache_restore_keys:
+        description: "Newline-separated restore-keys fallback ladder."
+        required: false
+        type: string
+        default: ""
 
 jobs:
   build:
@@ -52,31 +60,45 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
-      # Cache scope. Each (lang, label) has its own cache; both variants
-      # (text/images) of the same count share it via the restore-keys
-      # ladder, so the images job automatically inherits the summary
-      # SQLite that its text prerequisite just populated.
+      # We only cache the expensive-to-regenerate stuff:
+      #   * .cache/*.sqlite      — pageviews, summaries, meta classifier
+      #   * .cache/images/       — dithered JPEGs
+      # Explicitly NOT cached: .cache/dumps/ (huge, and we use --source api
+      # anyway), plus anything else that might land under .cache/ later.
       - name: Restore cache
+        id: cache
         uses: actions/cache@v6
         with:
-          path: .cache
-          key: randompedia-${{ inputs.lang }}-${{ inputs.label }}-${{ inputs.variant }}-${{ github.run_id }}
-          restore-keys: |
-            randompedia-${{ inputs.lang }}-${{ inputs.label }}-${{ inputs.variant }}-
-            randompedia-${{ inputs.lang }}-${{ inputs.label }}-
-            randompedia-${{ inputs.lang }}-
+          path: |
+            .cache/*.sqlite
+            .cache/images
+          key: ${{ inputs.cache_key }}
+          restore-keys: ${{ inputs.cache_restore_keys }}
 
-      - name: Build EPUB
+      - name: Build text EPUB
         env:
           LANG_CODE: ${{ inputs.lang }}
           SEED: ${{ inputs.seed }}
         run: |
           mkdir -p out
-          # When both --with-images and --include-fair-use are on, tag the
-          # filename so the release step can drop it before publishing —
-          # fair-use output must never end up on a GitHub Release.
+          randompedia \
+            --count ${{ inputs.count }} \
+            --lang "$LANG_CODE" \
+            --seed "$SEED" \
+            --source api \
+            --output "out/randompedia-${{ inputs.label }}-text.epub" \
+            -v
+
+      - name: Build images EPUB
+        env:
+          LANG_CODE: ${{ inputs.lang }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          # When --include-fair-use is on, tag the filename so the release
+          # step can drop it before publishing — fair-use output must never
+          # end up on a GitHub Release.
           suffix=""
-          if [ "${{ inputs.with_images }}" = "true" ] && [ "${{ inputs.include_fair_use }}" = "true" ]; then
+          if [ "${{ inputs.include_fair_use }}" = "true" ]; then
             suffix="-fairuse"
           fi
           randompedia \
@@ -84,19 +106,30 @@ jobs:
             --lang "$LANG_CODE" \
             --seed "$SEED" \
             --source api \
-            ${{ inputs.with_images && '--with-images' || '' }} \
-            ${{ (inputs.include_fair_use && inputs.with_images) && '--include-fair-use' || '' }} \
-            --output "out/randompedia-${{ inputs.label }}-${{ inputs.variant }}${suffix}.epub" \
+            --with-images \
+            ${{ inputs.include_fair_use && '--include-fair-use' || '' }} \
+            --output "out/randompedia-${{ inputs.label }}-images${suffix}.epub" \
             -v
+
+      - name: Report cache footprint
+        if: always()
+        run: |
+          if [ -d .cache ]; then
+            echo "sqlite:"
+            ls -lh .cache/*.sqlite 2>/dev/null || echo "  (none)"
+            echo "images:"
+            if [ -d .cache/images ]; then
+              n=$(find .cache/images -type f | wc -l)
+              sz=$(du -sh .cache/images | cut -f1)
+              echo "  $n files, $sz"
+            else
+              echo "  (none)"
+            fi
+          fi
 
       - uses: actions/upload-artifact@v7
         with:
-          # Artifact name mirrors the filename so it's clear in the
-          # Actions UI which runs produced personal-use fair-use output.
-          name: >-
-            randompedia-${{ inputs.label }}-${{ inputs.variant }}${{
-              (inputs.with_images && inputs.include_fair_use) && '-fairuse' || ''
-            }}
-          path: out/*.epub
+          name: randompedia-${{ inputs.label }}
+          path: out/randompedia-${{ inputs.label }}-*.epub
           if-no-files-found: error
           retention-days: 30

@@ -2,11 +2,12 @@ name: keep-cache-warm
 
 # GitHub evicts actions/cache entries that haven't been accessed in 7 days.
 # Our real build only runs monthly, so without this it would ALWAYS start
-# from an empty cache — turning a 5-minute build into a 60-minute one.
+# from an empty cache — turning a fast rebuild into a full re-download
+# from Wikimedia.
 #
 # This workflow reads (but doesn't write) the cache on a 5-day schedule,
 # which resets the eviction clock. It's cheap: ~30 seconds per run,
-# 6 runs/month, doesn't hit Wikimedia at all.
+# ~6 runs/month, doesn't hit Wikimedia at all.
 #
 # Only runs on the canonical repo; forks that don't build monthly don't
 # need to keep anything warm.
@@ -31,16 +32,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The build workflow uses several caches with a `randompedia-<lang>-...`
-      # prefix. Restoring the broadest prefix touches whichever concrete
-      # entry is most recent and resets its 7-day timer. We do NOT write
-      # a new cache here — that would use up storage budget and could
-      # displace the real one.
-      - name: Touch summaries + images cache
+      # build.yml stores everything under a single per-language key
+      # (`randompedia-<lang>-v1`). Restoring it here resets its 7-day
+      # eviction timer. We do NOT write a new cache — that would use up
+      # storage budget and could displace the real one.
+      - name: Touch cache
         uses: actions/cache/restore@v6
         with:
-          path: .cache
-          key: keep-cache-warm-never-matches  # forces the restore-keys fallback path
+          path: |
+            .cache/*.sqlite
+            .cache/images
+          key: randompedia-en-v1
           restore-keys: |
             randompedia-en-
           fail-on-cache-miss: false
@@ -49,7 +51,12 @@ jobs:
         run: |
           if [ -d .cache ] && [ -n "$(ls -A .cache 2>/dev/null)" ]; then
             echo "restored cache; contents:"
-            find .cache -maxdepth 2 -type f -printf '  %p (%s bytes)\n'
+            ls -lh .cache/*.sqlite 2>/dev/null || true
+            if [ -d .cache/images ]; then
+              n=$(find .cache/images -type f | wc -l)
+              sz=$(du -sh .cache/images | cut -f1)
+              echo "images: $n files, $sz"
+            fi
           else
             echo "no cache to restore yet (first build hasn't run, or the last one was >7 days ago)"
           fi
