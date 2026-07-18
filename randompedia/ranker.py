@@ -28,7 +28,7 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from . import USER_AGENT
-from .summaries import _parse_retry_after
+from .summaries import _parse_retry_after, _RateLimiter
 
 log = logging.getLogger(__name__)
 
@@ -109,9 +109,12 @@ def _days_back(*, today: dt.date | None = None, limit: int = 365):
     retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
     reraise=True,
 )
-def _fetch_day(client: httpx.Client, project: str, day: dt.date) -> list[dict] | None:
+def _fetch_day(client: httpx.Client, project: str, day: dt.date,
+               limiter: "_RateLimiter | None" = None) -> list[dict] | None:
     """Fetch one day's top-articles list. Returns None if the day has no
     data (published lag, holiday in the data pipeline, etc.)."""
+    if limiter is not None:
+        limiter.wait()
     url = (
         "https://wikimedia.org/api/rest_v1/metrics/pageviews/top/"
         f"{project}/all-access/{day.year}/{day.month:02d}/{day.day:02d}"
@@ -133,23 +136,29 @@ def rank_top_articles(
     lang: str = "en",
     count: int,
     max_days: int = 365,
-    target_multiplier: float = 2.0,
+    stability_margin: float = 0.2,
     cache: PageviewsCache | None = None,
     today: dt.date | None = None,
 ) -> list[RankedTitle]:
     """Return the top `count` articles ranked by aggregated pageviews.
 
     Iterates the daily-top endpoint most-recent-first, accumulating
-    scores. Stops as soon as we have `count * target_multiplier`
-    distinct titles (giving the summary-fetch step room to drop
-    disambiguation pages, 404s, meta articles, etc.) or when we've
-    walked `max_days` days, whichever comes first.
+    scores. Stops walking days as soon as we have
+    ``count * (1 + stability_margin)`` distinct titles — the extra
+    margin protects against the tail of the ranking shifting when the
+    last few days add high-view articles that would push out titles
+    currently in position ``count - 5``. Also stops at ``max_days`` if
+    the corpus never produces enough uniques.
+
+    The caller is responsible for any additional over-fetch on top of
+    `count` (e.g. to survive 404s and post-fetch filtering).
     """
     project = f"{lang}.wikipedia"
     scores: dict[str, int] = {}
-    target = int(count * target_multiplier)
+    target = int(count * (1.0 + stability_margin))
 
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    limiter = _RateLimiter(per_second=3.0)  # match the summaries fetcher
     days_fetched = 0
     days_from_cache = 0
     with httpx.Client(headers=headers, http2=True) as client:
@@ -162,7 +171,7 @@ def rank_top_articles(
 
             if entries is None:
                 try:
-                    entries = _fetch_day(client, project, day)
+                    entries = _fetch_day(client, project, day, limiter=limiter)
                 except Exception as e:  # noqa: BLE001
                     log.warning("pageviews fetch failed for %s: %s", day, e)
                     continue

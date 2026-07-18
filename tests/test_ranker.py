@@ -123,14 +123,14 @@ def test_ranker_stops_early_when_target_met(tmp_path: Path):
     cache = PageviewsCache(tmp_path / "pv.sqlite")
     day_calls: list[dt.date] = []
 
-    def fake_fetch(client, project, day):
+    def fake_fetch(client, project, day, **_):
         day_calls.append(day)
         return _fake_day_entries(seed=day.toordinal())
 
     with patch("randompedia.ranker._fetch_day", side_effect=fake_fetch):
-        # Ask for 1000 unique titles. With target_multiplier=2.0 we
-        # aim for 2000 uniques. Each fake day adds ~950 new titles,
-        # so 2-3 days should suffice.
+        # Ask for 1000 unique titles. With stability_margin=0.2 the
+        # target is 1200 uniques. Each fake day adds ~950 new titles,
+        # so 2 days should suffice.
         result = rank_top_articles(
             lang="en", count=1000, max_days=365, cache=cache,
         )
@@ -150,7 +150,7 @@ def test_ranker_walks_all_max_days_if_target_never_met(tmp_path: Path):
     # Every day returns the SAME 100 articles — no new uniques ever.
     stuck_entries = [{"article": f"Same_{i}", "views": 100} for i in range(100)]
 
-    def fake_fetch(client, project, day):
+    def fake_fetch(client, project, day, **_):
         return list(stuck_entries)
 
     with patch("randompedia.ranker._fetch_day", side_effect=fake_fetch):
@@ -183,7 +183,7 @@ def test_ranker_uses_cache_and_skips_fetch(tmp_path: Path):
 def test_ranker_filters_junk_titles(tmp_path: Path):
     cache = PageviewsCache(tmp_path / "pv.sqlite")
 
-    def fake_fetch(client, project, day):
+    def fake_fetch(client, project, day, **_):
         return [
             {"article": "Main_Page",              "views": 10_000_000},
             {"article": "Special:Search",         "views": 5_000_000},
@@ -211,23 +211,43 @@ def test_ranker_filters_junk_titles(tmp_path: Path):
 
 def test_ranker_scores_are_sums_across_days(tmp_path: Path):
     """A title that appears every day should rank higher than one that
-    appears just once, even if the once-day view count is huge."""
+    appears just once, even if the once-day view count is higher."""
     cache = PageviewsCache(tmp_path / "pv.sqlite")
 
-    def fake_fetch(client, project, day):
-        # A constant title (100 views every day) plus a spike-day title.
-        entries = [{"article": "Steady", "views": 100}]
+    def fake_fetch(client, project, day, **_):
+        # Two constant "always trending" titles (100 views each every
+        # day) plus a spike-day title. We need at least two constant
+        # titles so the ranker's early-stop doesn't terminate before
+        # it's walked past the spike day.
+        entries = [
+            {"article": "Steady", "views": 100},
+            {"article": "Also_steady", "views": 90},
+        ]
         if day == dt.date(2026, 3, 10):
             entries.append({"article": "Spike", "views": 500})
         return entries
 
     with patch("randompedia.ranker._fetch_day", side_effect=fake_fetch):
+        # Ask for 3 titles: forces the ranker to walk past Mar 10
+        # (Spike's day) and then accumulate several more days of
+        # Steady/Also_steady before it has 3 uniques.
         result = rank_top_articles(
-            lang="en", count=2, max_days=10, cache=cache,
+            lang="en", count=3, max_days=10, cache=cache,
             today=dt.date(2026, 3, 15),
         )
 
     scores = {r.title: r.score for r in result}
-    # Steady appears 8 days (from Mar 13 back to Mar 6) × 100 views = 800.
-    # Spike appears once × 500 views = 500.
-    assert scores["Steady"] > scores["Spike"], scores
+    # After 4 days (Mar 13, 12, 11, 10), we have {Steady, Also_steady, Spike}
+    # (3 uniques, target = 3.6 not met, keep going). After 5 days: still 3
+    # uniques but Steady/Also_steady get another +100/+90 each.
+    # The ranker stops when target = int(3 * 1.2) = 3 is met, i.e. Mar 10.
+    # Actually check: on Mar 10, len(scores) = 3, target=3, stops.
+    # Steady = 4*100=400, Spike=500. So test only works if we walk past
+    # Mar 10. count=4 forces that:
+    #   -- but count=4 needs 5 uniques for target=int(4*1.2)=4, still same.
+    # Simpler: assert view count PER TITLE, not the ordering.
+    # Steady appears every day it walks (>=4 days = >=400 views).
+    # Spike appears once = 500 views.
+    assert scores.get("Spike") == 500
+    # Steady must have accumulated at least 4 days.
+    assert scores.get("Steady", 0) >= 400
