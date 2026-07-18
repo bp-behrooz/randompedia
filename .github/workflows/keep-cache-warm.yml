@@ -1,0 +1,55 @@
+name: keep-cache-warm
+
+# GitHub evicts actions/cache entries that haven't been accessed in 7 days.
+# Our real build only runs monthly, so without this it would ALWAYS start
+# from an empty cache — turning a 5-minute build into a 60-minute one.
+#
+# This workflow reads (but doesn't write) the cache on a 5-day schedule,
+# which resets the eviction clock. It's cheap: ~30 seconds per run,
+# 6 runs/month, doesn't hit Wikimedia at all.
+#
+# Only runs on the canonical repo; forks that don't build monthly don't
+# need to keep anything warm.
+
+on:
+  schedule:
+    - cron: "23 6 */5 * *"  # every 5 days at 06:23 UTC (odd minute to avoid the hour spike)
+  workflow_dispatch:
+
+permissions:
+  actions: read
+
+concurrency:
+  group: keep-cache-warm
+  cancel-in-progress: true
+
+jobs:
+  touch:
+    if: github.repository == 'everplays/randompedia'
+    name: touch cache
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The build workflow uses several caches with a `randompedia-<lang>-...`
+      # prefix. Restoring the broadest prefix touches whichever concrete
+      # entry is most recent and resets its 7-day timer. We do NOT write
+      # a new cache here — that would use up storage budget and could
+      # displace the real one.
+      - name: Touch summaries + images cache
+        uses: actions/cache/restore@v6
+        with:
+          path: .cache
+          key: keep-cache-warm-never-matches  # forces the restore-keys fallback path
+          restore-keys: |
+            randompedia-en-
+          fail-on-cache-miss: false
+
+      - name: Report what we touched
+        run: |
+          if [ -d .cache ] && [ -n "$(ls -A .cache 2>/dev/null)" ]; then
+            echo "restored cache; contents:"
+            find .cache -maxdepth 2 -type f -printf '  %p (%s bytes)\n'
+          else
+            echo "no cache to restore yet (first build hasn't run, or the last one was >7 days ago)"
+          fi
