@@ -76,7 +76,12 @@ def _all_chapter_htmls(zf: zipfile.ZipFile) -> list[tuple[str, str]]:
     ]
     filtered = [
         n for n in names_in_order
-        if "nav" not in n.lower() and "colophon" not in n.lower()
+        # Skip: nav xhtml, colophon, and the generated book cover (which
+        # is exactly `cover.xhtml`, distinct from per-article cover pages
+        # named `chNNNNN_..._cover.xhtml`).
+        if "nav" not in n.lower()
+        and "colophon" not in n.lower()
+        and not n.endswith("/cover.xhtml")
     ]
     return [(n, zf.read(n).decode("utf-8")) for n in filtered]
 

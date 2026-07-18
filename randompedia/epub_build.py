@@ -14,6 +14,7 @@ from ebooklib import epub
 
 from . import __version__, PROJECT_URL
 from .images import ImagePipeline, ImageSpec, ProcessedImage
+from .cover import render_cover
 from .summaries import ArticleSummary
 
 log = logging.getLogger(__name__)
@@ -127,6 +128,14 @@ def build_epub(
     book.add_metadata("DC", "rights",
                       "CC BY-SA 4.0 — https://creativecommons.org/licenses/by-sa/4.0/")
     book.add_metadata("DC", "source", f"https://{meta.lang}.wikipedia.org/")
+
+    # Simple generated cover. `set_cover` both registers the image as
+    # the library-thumbnail cover for capable readers AND inserts an
+    # xhtml wrapper as the first spine item, so CrossPoint opens on it.
+    cover_title = "randompedia"
+    cover_subtitle = f"top {total} \u00b7 {language_display_name(meta.lang)}"
+    book.set_cover("cover.jpg",
+                   render_cover(title=cover_title, subtitle=cover_subtitle))
 
     css = epub.EpubItem(
         uid="style_main", file_name="styles/main.css",

@@ -11,7 +11,7 @@ from pathlib import Path
 from .epub_build import BookMeta, build_epub, language_display_name, stable_book_id
 from .images import ImageSpec
 from .meta_classifier import MetaClassifierCache, classify_articles
-from .ranker import RankedTitle, rank_top_articles
+from .ranker import PageviewsCache, RankedTitle, rank_top_articles
 from .summaries import ArticleSummary, SummaryCache, SummaryFetcher
 
 log = logging.getLogger("randompedia")
@@ -27,8 +27,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Wikipedia language edition (default: en).")
     p.add_argument("--seed", default=DEFAULT_SEED,
                    help="Shuffle seed (default: %(default)s).")
-    p.add_argument("--months", type=int, default=12,
-                   help="Aggregate pageviews over the last N months (default: 12).")
+    p.add_argument("--max-days", type=int, default=365,
+                   help="How far back the ranker will look for top-viewed "
+                        "articles (default: 365). Walks day by day, newest "
+                        "first, and stops early once it has enough unique "
+                        "titles to satisfy --count.")
     p.add_argument("--with-images", action="store_true",
                    help="Include lead images (grayscale, dithered).")
     p.add_argument("--include-fair-use", action="store_true",
@@ -168,7 +171,11 @@ def main(argv: list[str] | None = None) -> int:
     # top-viewed set.
     overfetch_ratio = 1.30 if not args.keep_meta_articles else 1.15
     overfetch = int(args.count * overfetch_ratio) + 50
-    ranked = rank_top_articles(lang=args.lang, count=overfetch, months=args.months)
+    pageviews_cache = PageviewsCache(args.cache_dir / "pageviews.sqlite")
+    ranked = rank_top_articles(
+        lang=args.lang, count=overfetch, max_days=args.max_days,
+        cache=pageviews_cache,
+    )
     log.info("got %d ranked titles", len(ranked))
 
     if args.source == "api":

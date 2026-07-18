@@ -5,6 +5,7 @@ These specifically guard against the classes of bugs already seen:
   - Image href in chapter HTML not resolving to an actual file in the archive
 """
 import io
+import re
 import zipfile
 from pathlib import Path
 
@@ -76,8 +77,14 @@ def test_text_only_epub_has_no_image_files(tmp_path: Path):
     )
     with zipfile.ZipFile(out) as zf:
         names = zf.namelist()
-    assert not any(n.endswith(".png") or n.endswith(".jpg") or n.endswith(".jpeg")
-                   for n in names)
+    # No lead-image files. `cover.jpg` is the generated book cover and
+    # is legitimately present in every build.
+    lead_imgs = [
+        n for n in names
+        if (n.endswith(".png") or n.endswith(".jpg") or n.endswith(".jpeg"))
+        and "cover" not in n.lower()
+    ]
+    assert not lead_imgs, lead_imgs
 
 
 def test_every_image_src_resolves_to_a_file_in_the_epub(
@@ -100,10 +107,10 @@ def test_every_image_src_resolves_to_a_file_in_the_epub(
         # Find every chapter, parse its <img src=...>, and confirm the target exists.
         import re
         img_re = re.compile(rb'<img[^>]*\bsrc="([^"]+)"')
-        chapters = [n for n in names
-                    if n.endswith(".xhtml")
-                    and "nav" not in n.lower()
-                    and "colophon" not in n.lower()]
+        # Match article chapters (chNNNNN_ prefix), which excludes nav,
+        # colophon, and the generated cover.xhtml.
+        article_re = re.compile(r'/ch\d+_')
+        chapters = [n for n in names if n.endswith(".xhtml") and article_re.search(n)]
         assert chapters, "no chapters found"
 
         found_any_img = False
@@ -151,8 +158,7 @@ def test_chapter_title_is_plain_text_not_html(tmp_path: Path):
     with zipfile.ZipFile(out) as zf:
         chap = next(n for n in zf.namelist()
                     if n.endswith(".xhtml")
-                    and "nav" not in n.lower()
-                    and "colophon" not in n.lower())
+                    and re.search(r'/ch\d+_', n))
         html = zf.read(chap).decode("utf-8")
     assert "<h1>Cristiano Ronaldo</h1>" in html
     assert "mw-page-title-main" not in html
@@ -184,11 +190,10 @@ def test_chapter_count_matches_article_count(tmp_path: Path):
     out = tmp_path / "count.epub"
     build_epub(articles=articles, output_path=out, meta=_meta(), with_images=False)
     with zipfile.ZipFile(out) as zf:
-        # Exclude the nav page and the colophon; only count real article chapters.
+        # Exclude nav, colophon, and the generated cover.xhtml; only
+        # count real article chapters.
         chapters = [
             n for n in zf.namelist()
-            if n.endswith(".xhtml")
-            and "nav" not in n.lower()
-            and "colophon" not in n.lower()
+            if n.endswith(".xhtml") and re.search(r'/ch\d+_', n)
         ]
     assert len(chapters) == len(articles)
