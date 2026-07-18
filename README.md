@@ -5,24 +5,12 @@ optimized for low-powered e-ink readers such as
 [xteink / crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader)
 running on an ESP32.
 
-Each entry is a short summary (title + one or two paragraphs, same content
-served by Wikipedia's mobile page-preview card). The `--with-images` variants
-include the article's lead image, converted to a 4-bit grayscale, dithered PNG
-so it looks good and stays small on e-ink hardware.
-
-Six artifacts are produced per release:
-
-- `randompedia-1k-text.epub`
-- `randompedia-1k-images.epub`
-- `randompedia-5k-text.epub`
-- `randompedia-5k-images.epub`
-- `randompedia-10k-text.epub`
-- `randompedia-10k-images.epub`
-
 ## Download
 
 Latest builds are attached to the most recent
-[GitHub Release](https://github.com/everplays/randompedia/releases/latest):
+[GitHub Release](https://github.com/everplays/randompedia/releases/latest)
+(see [all releases](https://github.com/everplays/randompedia/releases) for
+previous months):
 
 - [randompedia-1k-text.epub](https://github.com/everplays/randompedia/releases/latest/download/randompedia-1k-text.epub)
 - [randompedia-1k-images.epub](https://github.com/everplays/randompedia/releases/latest/download/randompedia-1k-images.epub)
@@ -41,21 +29,19 @@ Latest builds are attached to the most recent
    so re-runs are almost free. For very large runs, pass
    `--source enterprise-dump` to stream the monthly Enterprise HTML dump
    instead — one big download, zero live API traffic.
-3. **Shuffle.** Articles are shuffled with a fixed seed so runs are
-   reproducible. Change `--seed` to get a different order.
-4. **Optimize images.** Lead images are downscaled to ~400 px wide, converted
-   to grayscale, and Floyd–Steinberg dithered to a 16-shade palette.
+3. **Shuffle.** Articles are shuffled with a fixed seed (default
+   `randompedia-v1`) so runs are reproducible. Change `--seed` to get a
+   different order.
+4. **Optimize images.** Lead images are downscaled to at most 400x320,
+   converted to grayscale, and encoded as baseline grayscale JPEG. The
+   CrossPoint firmware does its own dither to the panel's 16 shades at
+   draw time, so we deliberately ship a smooth grayscale image rather
+   than pre-dithering.
 5. **Build EPUB.** One chapter per article, minimal CSS, no JavaScript.
 
 ## Building locally
 
-You need **Python 3.11 or newer**. Pick whichever route you prefer.
-
-### Option A — Docker (no Python needed on the host)
-
-The repo ships a `Dockerfile` that builds a self-contained image with all
-dependencies pinned. Nothing gets installed on your machine outside of
-Docker's own storage.
+### Option A — Docker
 
 ```bash
 # Build the image once (~250 MB, takes a minute or two).
@@ -71,27 +57,20 @@ docker run --rm \
     --cache-dir /cache \
     --output /out/randompedia-1k-text.epub
 
-# Same, with dithered lead images.
+# Same, with lead images.
 docker run --rm -v "$PWD/out:/out" -v "$PWD/cache:/cache" randompedia \
   --count 1000 --lang en --with-images \
   --cache-dir /cache \
   --output /out/randompedia-1k-images.epub
-
-# Personal build that also includes fair-use images (posters, album art…).
-# Do not redistribute the resulting file.
-docker run --rm -v "$PWD/out:/out" -v "$PWD/cache:/cache" randompedia \
-  --count 1000 --lang en --with-images --include-fair-use \
-  --cache-dir /cache \
-  --output /out/randompedia-1k-personal.epub
 ```
 
-The `/cache` volume holds the summary SQLite database and the processed
-image PNGs; keeping it around across runs makes subsequent builds nearly
+The `/cache` volume holds the summary SQLite databases and the processed
+image JPEGs; keeping it around across runs makes subsequent builds nearly
 free.
 
 ### Option B — Python virtualenv
 
-If you'd rather not use Docker:
+Requires **Python 3.11 or newer**.
 
 ```bash
 python3.12 -m venv .venv          # or python3.11 / python3.13
@@ -108,68 +87,17 @@ randompedia --count 1000 --lang en --with-images \
 # 10k using the enterprise dump instead of the API
 randompedia --count 10000 --source enterprise-dump \
   --output out/randompedia-10k-text.epub
-
-# Personal build including fair-use images (not redistributable).
-randompedia --count 1000 --with-images --include-fair-use \
-  --output out/randompedia-1k-personal.epub
-
-deactivate                        # when done
 ```
-
-To run the test suite, install with the `dev` extra:
-
-```bash
-pip install -e '.[dev]'
-pytest
-```
-
-## Reproducibility
-
-The default seed is `randompedia-v1`. Passing the same `--count`, `--lang`,
-`--seed`, and top-list month range will produce a byte-identical article
-ordering.
 
 ## CI
 
-`.github/workflows/build.yml` runs on the 3rd of every month (giving
-Wikimedia time to publish the previous month's pageviews) and produces
-the four EPUBs listed above, attaching them to a GitHub Release tagged
-`YYYY-MM`.
+`.github/workflows/build.yml` runs on the 3rd of every month and attaches
+the six EPUBs to a GitHub Release tagged `YYYY-MM`. The scheduled build
+only runs on the canonical repository (`everplays/randompedia`); forks
+never hit Wikimedia unless their owner explicitly dispatches the workflow.
 
-The scheduled build only runs on the canonical repository
-(`everplays/randompedia`). Forks that just sit there never spam
-Wikimedia — the fork owner has to explicitly opt in by dispatching the
-workflow themselves. The `test` job runs unconditionally on every push
-and PR so forks still get CI feedback on code changes.
-
-### Building your own personal variant
-
-Want an English 5000-article edition, or images including fair-use
-content, or a different shuffle? Fork the repository and dispatch the
-workflow on your fork:
-
-```bash
-gh workflow run build-epubs --repo your-user/your-fork \
-  -f seed=my-seed -f lang=en -f include_fair_use=true
-```
-
-or via the Actions tab: **build-epubs → Run workflow**.
-
-Dispatch inputs:
-
-| Input | Default | Notes |
-|---|---|---|
-| `seed` | `randompedia-v1` | Shuffle seed. Same seed + count + lang produces the same ordering. |
-| `lang` | `en` | Wikipedia language edition. |
-| `include_fair_use` | `false` | When true, the with-images builds include fair-use images (film posters, album covers, etc.). See the note below. |
-
-**Fair-use output never lands on a GitHub Release**, on any repository.
-When you dispatch with `include_fair_use=true`, the resulting file is
-named `randompedia-<size>-images-fairuse.epub` and is available only as
-a workflow-run artifact (30-day retention, requires GitHub auth to
-download). This matches the licensing story — fair-use content is for
-personal use, not redistribution — and applies uniformly to canonical
-and forked repos alike.
+Contributor and fork-owner docs (running tests, dispatching personal
+builds, the fair-use opt-in) live in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## CrossPoint / FreeInkBook CSS compatibility
 
@@ -184,13 +112,8 @@ The EPUB uses a deliberately tiny CSS subset because the CrossPoint reader
   `#id`, no pseudo-classes, no descendant combinators
 - Inline `style=""` attributes (same subset)
 
-Everything else — `position`, `flex`, viewport units (`vh`/`vw`), `border`,
-`padding`, `background`, `color`, `page-break-*`, `@media` — is silently
-dropped by the reader. `<hr>` produces no visible line. If you contribute
-CSS, stay inside the supported subset or add it as progressive
-enhancement that other, more capable EPUB readers can use.
-
-Reference: `freeink-sdk/libs/book/FreeInkBook/src/css/Css.cpp` in the
+Everything outside that subset is silently dropped. Reference:
+`freeink-sdk/libs/book/FreeInkBook/src/css/Css.cpp` in the
 [crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-reader)
 firmware source.
 
