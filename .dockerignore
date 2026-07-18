@@ -1,0 +1,28 @@
+# Keep the Docker build context small and reproducible.
+.git/
+.gitignore
+.github/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Local build artifacts and caches — must not leak into the image.
+out/
+.cache/
+test-docker-out/
+test-docker-cache/
+
+# Editor / OS junk
+.DS_Store
+._*
+.idea/
+.vscode/
+
+# Tests aren't needed at runtime.
+tests/

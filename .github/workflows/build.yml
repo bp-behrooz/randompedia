@@ -1,0 +1,188 @@
+name: build-epubs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # 03:17 UTC on the 3rd of every month — pageviews for the previous
+    # month are reliably published by then.
+    - cron: "17 3 3 * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Shuffle seed"
+        required: false
+        default: "randompedia-v1"
+      lang:
+        description: "Wikipedia language edition"
+        required: false
+        default: "en"
+      include_fair_use:
+        description: "Include fair-use images (personal builds only; not redistributable)"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write  # for creating releases
+
+concurrency:
+  group: build-epubs
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - run: pip install -e '.[dev]'
+      - run: pytest
+
+  build:
+    needs: test
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - count: 1000
+            label: 1k
+            variant: text
+            with_images: false
+            source: api
+          - count: 1000
+            label: 1k
+            variant: images
+            with_images: true
+            source: api
+          - count: 10000
+            label: 10k
+            variant: text
+            with_images: false
+            source: api
+          - count: 10000
+            label: 10k
+            variant: images
+            with_images: true
+            source: api
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore cache
+        uses: actions/cache@v6
+        with:
+          path: .cache
+          key: randompedia-${{ inputs.lang || 'en' }}-${{ matrix.label }}-${{ matrix.variant }}-${{ github.run_id }}
+          restore-keys: |
+            randompedia-${{ inputs.lang || 'en' }}-${{ matrix.label }}-${{ matrix.variant }}-
+            randompedia-${{ inputs.lang || 'en' }}-${{ matrix.label }}-
+            randompedia-${{ inputs.lang || 'en' }}-
+
+      - name: Build EPUB
+        env:
+          LANG_CODE: ${{ inputs.lang || 'en' }}
+          SEED: ${{ inputs.seed || 'randompedia-v1' }}
+        run: |
+          mkdir -p out
+          randompedia \
+            --count ${{ matrix.count }} \
+            --lang "$LANG_CODE" \
+            --seed "$SEED" \
+            --source ${{ matrix.source }} \
+            ${{ matrix.with_images && '--with-images' || '' }} \
+            ${{ (inputs.include_fair_use && matrix.with_images) && '--include-fair-use' || '' }} \
+            --output out/randompedia-${{ matrix.label }}-${{ matrix.variant }}.epub \
+            -v
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: randompedia-${{ matrix.label }}-${{ matrix.variant }}
+          path: out/*.epub
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Compute release tag
+        id: tag
+        run: echo "tag=$(date -u +'%Y-%m')" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the four expected EPUBs are present
+        run: |
+          set -eu
+          shopt -s nullglob
+          files=(out/*.epub)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no .epub files found in out/" >&2
+            exit 1
+          fi
+          printf 'found: %s\n' "${files[@]}"
+
+      - name: Create or update GitHub Release and upload EPUBs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -eu
+          NOTES=$(cat <<'EOF'
+          Monthly build of randompedia EPUBs.
+
+          - `randompedia-1k-text.epub` — top 1k articles, text only
+          - `randompedia-1k-images.epub` — top 1k articles, with dithered lead images
+          - `randompedia-10k-text.epub` — top 10k articles, text only
+          - `randompedia-10k-images.epub` — top 10k articles, with dithered lead images
+
+          **Attribution.** Article text and images are the work of
+          Wikipedia contributors. Each entry in the book links back to
+          its source article. Only images hosted on Wikimedia Commons
+          are included; non-free / fair-use images from individual
+          Wikipedia projects are excluded so the book can be freely
+          redistributed.
+
+          **License.** Article content © Wikipedia contributors, licensed
+          [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
+          and GFDL. This compilation, as a derivative work, is likewise
+          released under CC BY-SA 4.0.
+          EOF
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists — updating notes and re-uploading assets"
+            gh release edit "$TAG" \
+              --title "randompedia $TAG" \
+              --notes "$NOTES"
+            # --clobber replaces any asset with the same name, so re-runs work.
+            gh release upload "$TAG" out/*.epub --clobber
+          else
+            echo "creating release $TAG"
+            gh release create "$TAG" out/*.epub \
+              --title "randompedia $TAG" \
+              --notes "$NOTES"
+          fi

@@ -1,0 +1,34 @@
+[project]
+name = "randompedia"
+version = "0.1.0"
+description = "Generate EPUBs of top Wikipedia articles, shuffled, optimized for e-ink readers like xteink/crosspoint."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = [
+    "httpx[http2]>=0.27",
+    "ebooklib>=0.18",
+    "Pillow>=10.3",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.2",
+    "tenacity>=8.3",
+]
+
+[project.scripts]
+randompedia = "randompedia.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["randompedia"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
