@@ -22,9 +22,7 @@ Six artifacts are produced per release:
 ## Download
 
 Latest builds are attached to the most recent
-[GitHub Release](https://github.com/everplays/randompedia/releases/latest).
-These direct links always point at the latest month's build — no need
-to update them:
+[GitHub Release](https://github.com/everplays/randompedia/releases/latest):
 
 - [randompedia-1k-text.epub](https://github.com/everplays/randompedia/releases/latest/download/randompedia-1k-text.epub)
 - [randompedia-1k-images.epub](https://github.com/everplays/randompedia/releases/latest/download/randompedia-1k-images.epub)
