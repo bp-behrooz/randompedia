@@ -51,9 +51,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
+      # Run one at a time to stay well under Wikimedia's per-IP rate limits.
+      # GitHub Actions runners share IP ranges; four parallel jobs each doing
+      # 3 req/s look like a single 12 req/s client to Wikimedia's edge and
+      # get 429'd. Serializing also lets each job warm the summaries cache
+      # for the ones that follow — the images jobs typically finish in
+      # seconds because their text counterparts already populated it.
+      max-parallel: 1
       fail-fast: false
       matrix:
         include:
+          # Order matters: text first so the same-count images job that
+          # follows can hit a warm SQLite summaries cache.
           - count: 1000
             label: 1k
             variant: text

@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from PIL import Image
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from . import USER_AGENT
+from .summaries import _parse_retry_after
 
 log = logging.getLogger(__name__)
 
@@ -50,9 +52,14 @@ class ProcessedImage:
     media_type: str    # "image/png"
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=15))
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(min=2, max=60))
 def _download(client: httpx.Client, url: str) -> bytes:
     r = client.get(url, timeout=30.0)
+    if r.status_code == 429:
+        wait_s = _parse_retry_after(r.headers.get("Retry-After") or "30")
+        wait_s = min(max(wait_s, 5.0), 120.0)
+        log.warning("429 for image %s, waiting %.1fs", url, wait_s)
+        time.sleep(wait_s)
     r.raise_for_status()
     return r.content
 

@@ -27,6 +27,7 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from . import USER_AGENT
+from .summaries import _parse_retry_after
 
 log = logging.getLogger(__name__)
 
@@ -116,8 +117,8 @@ class MetaClassifierCache:
 
 
 @retry(
-    stop=stop_after_attempt(4),
-    wait=wait_exponential(min=2, max=30),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(min=2, max=120),
     retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
     reraise=True,
 )
@@ -128,6 +129,11 @@ def _sparql_query(client: httpx.Client, query: str) -> list[dict]:
         params={"query": query, "format": "json"},
         timeout=60.0,
     )
+    if r.status_code == 429:
+        wait_s = _parse_retry_after(r.headers.get("Retry-After") or "30")
+        wait_s = min(max(wait_s, 5.0), 120.0)
+        log.warning("429 from Wikidata SPARQL, waiting %.1fs", wait_s)
+        time.sleep(wait_s)
     r.raise_for_status()
     return r.json()["results"]["bindings"]
 

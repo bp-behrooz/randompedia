@@ -87,6 +87,34 @@ def _is_freely_licensed_image_url(url: str) -> bool:
     return bool(_FREE_IMAGE_PATH_RE.match(url))
 
 
+def _parse_retry_after(value: str) -> float:
+    """Parse an HTTP ``Retry-After`` header value into seconds.
+
+    Per RFC 9110 §10.2.3, the value is either a non-negative integer number
+    of seconds or an HTTP-date. Returns 30.0 as a sane default on parse
+    failure so a malformed header doesn't collapse into a busy loop.
+    """
+    value = (value or "").strip()
+    if not value:
+        return 30.0
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        import datetime as _dt
+        target = parsedate_to_datetime(value)
+        if target is None:
+            return 30.0
+        now = _dt.datetime.now(_dt.timezone.utc)
+        if target.tzinfo is None:
+            target = target.replace(tzinfo=_dt.timezone.utc)
+        return max(0.0, (target - now).total_seconds())
+    except (TypeError, ValueError, AttributeError):
+        return 30.0
+
+
 @dataclass(slots=True)
 class ArticleSummary:
     title: str            # display title
@@ -181,7 +209,7 @@ class SummaryFetcher:
         *,
         lang: str,
         cache: SummaryCache,
-        rate_per_second: float = 5.0,
+        rate_per_second: float = 3.0,
         include_fair_use_images: bool = False,
     ):
         self.lang = lang
@@ -204,16 +232,26 @@ class SummaryFetcher:
         self.close()
 
     @retry(
-        stop=stop_after_attempt(4),
-        wait=wait_exponential(min=1, max=30),
+        stop=stop_after_attempt(6),
+        wait=wait_exponential(min=2, max=120),
         retry=retry_if_exception_type((httpx.TransportError, httpx.HTTPStatusError)),
         reraise=True,
     )
     def _get(self, url: str) -> httpx.Response:
         self.limiter.wait()
         r = self.client.get(url)
-        # Retry on 5xx and 429; give up on other 4xx.
-        if r.status_code >= 500 or r.status_code == 429:
+        # Retry on 5xx and 429. On 429 Wikimedia includes a `Retry-After`
+        # header telling us exactly how long to wait — honour it so we don't
+        # spam them with retries a second apart.
+        if r.status_code == 429:
+            retry_after = r.headers.get("Retry-After")
+            wait_s = _parse_retry_after(retry_after) if retry_after else 30.0
+            wait_s = min(max(wait_s, 5.0), 120.0)  # clamp to a sane range
+            log.warning("429 for %s, waiting %.1fs (Retry-After=%s)",
+                        url, wait_s, retry_after)
+            time.sleep(wait_s)
+            r.raise_for_status()
+        if r.status_code >= 500:
             r.raise_for_status()
         return r
 
