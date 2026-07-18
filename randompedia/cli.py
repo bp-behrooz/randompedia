@@ -44,7 +44,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                    help="Max image height in pixels (default: 320). "
                         "Sized so title+subtitle+image fit on a single page "
                         "before the summary body on 480x800/528x792 panels.")
-    p.add_argument("--image-shades", type=int, default=16)
+    p.add_argument("--image-quality", type=int, default=75,
+                   help="JPEG quality 1-100 (default: 75). Images are always "
+                        "encoded as baseline grayscale JPEG for CrossPoint "
+                        "compatibility and small file size.")
     p.add_argument("--source", choices=("api", "enterprise-dump"), default="api",
                    help="Content source. 'api' = REST summaries (default). "
                         "'enterprise-dump' = monthly HTML dump, recommended for very large counts.")
@@ -186,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         image_spec=ImageSpec(
             max_width=args.image_width,
             max_height=args.image_height,
-            shades=args.image_shades,
+            quality=args.image_quality,
         ),
     )
     return 0

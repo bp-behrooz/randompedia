@@ -22,17 +22,17 @@ from randompedia.summaries import ArticleSummary
 def _fake_png() -> bytes:
     im = Image.new("L", (400, 300), 200)
     buf = io.BytesIO()
-    im.save(buf, format="PNG")
+    im.save(buf, format="JPEG", quality=75)
     return buf.getvalue()
 
 
 class _FakePipeline:
-    def __init__(self, *a, **kw): self.png = _fake_png()
+    def __init__(self, *a, **kw): self.data = _fake_png()
     def __enter__(self): return self
     def __exit__(self, *a): pass
     def close(self): pass
     def fetch_and_process(self, url):
-        return ProcessedImage(self.png, "img_fake.png", "image/png")
+        return ProcessedImage(self.data, "img_fake.jpg", "image/jpeg")
 
 
 def _art(with_image: bool = True, with_desc: bool = True) -> ArticleSummary:

@@ -68,16 +68,13 @@ def test_defaults_are_landscape_or_square_capable():
     )
 
 
-def test_defaults_use_16_shades_matching_e_ink_hardware():
-    """CrossPoint targets 16-shade grayscale panels (4-bit). More shades
-    would just balloon file size for no visible benefit; fewer would look
-    worse than the hardware can do."""
+def test_default_quality_is_e_ink_appropriate():
+    """CrossPoint quantises the decoded JPEG down to 16 shades at render
+    time, so a very high JPEG quality would just waste bytes without any
+    visible benefit. Very low would introduce visible artefacts. The
+    sweet spot is somewhere in the 65-85 band; keep the default in it."""
     spec = ImageSpec()
-    assert spec.shades == 16
-
-
-def test_dither_default_on():
-    """Floyd-Steinberg dithering makes 16-shade output look much better
-    on e-ink than plain quantization."""
-    spec = ImageSpec()
-    assert spec.dither is True
+    assert 65 <= spec.quality <= 85, (
+        f"default JPEG quality {spec.quality} is outside the "
+        f"e-ink-appropriate 65-85 band"
+    )

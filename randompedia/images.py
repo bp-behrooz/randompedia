@@ -1,6 +1,27 @@
-"""Image pipeline: download → grayscale → resize → dither → PNG.
+"""Image pipeline: download → grayscale → resize → baseline grayscale JPEG.
 
 Tuned for e-ink displays (xteink / crosspoint-reader is 16-shade grayscale).
+
+Design notes:
+
+  * **JPEG, not PNG.** EPUB 3 mandates JPEG support in every conformant
+    reader, and it compresses ~2x better than a dithered PNG at
+    equivalent perceived quality on e-ink. PNG buys us nothing here.
+
+  * **Baseline, not progressive.** CrossPoint's TJpgDec decodes both,
+    but the progressive path is a DC-only preview (blurry). Ship
+    baseline so the reader shows the fully-decoded image.
+
+  * **Grayscale (single component), not RGB/YCbCr.** CrossPoint is
+    configured for 8-bit grayscale output (`JD_FORMAT = 2` in
+    `freeink-sdk/.../tjpgdcnf.h`); a colour JPEG would be decoded to
+    grayscale anyway. Grayscale JPEGs are half the size.
+
+  * **No pre-dither.** CrossPoint does its own Bayer 4x4 dither at draw
+    time when quantising to the panel's 16 shades. Pre-dithering just
+    creates high-frequency noise that hurts JPEG compression and then
+    the reader dithers on top of the dither. A smooth grayscale JPEG
+    gives the reader a cleaner input.
 """
 
 from __future__ import annotations
@@ -41,15 +62,17 @@ class ImageSpec:
     """
     max_width: int = 400
     max_height: int = 320
-    shades: int = 16   # 4-bit grayscale
-    dither: bool = True
+    # JPEG quality 1-100. 75 is a good sweet spot for e-ink at these
+    # dimensions: noticeably smaller than 85, and the reader's own
+    # quantisation to 16 shades hides most compression artefacts.
+    quality: int = 75
 
 
 @dataclass(slots=True)
 class ProcessedImage:
-    data: bytes        # PNG bytes
-    filename: str      # stable name, safe for EPUB
-    media_type: str    # "image/png"
+    data: bytes
+    filename: str      # e.g. "img_a1b2c3d4e5f60718.jpg"
+    media_type: str    # always "image/jpeg"
 
 
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(min=2, max=60))
@@ -64,28 +87,9 @@ def _download(client: httpx.Client, url: str) -> bytes:
     return r.content
 
 
-def _quantize_to_shades(img: Image.Image, shades: int, dither: bool) -> Image.Image:
-    """Reduce a grayscale image to `shades` distinct gray levels."""
-    if shades >= 256:
-        return img
-    # Build an evenly-spaced grayscale palette.
-    palette: list[int] = []
-    for i in range(shades):
-        v = round(i * 255 / (shades - 1))
-        palette.extend([v, v, v])
-    palette.extend([0, 0, 0] * (256 - shades))
-
-    pal_img = Image.new("P", (1, 1))
-    pal_img.putpalette(palette)
-
-    rgb = img.convert("RGB")
-    d = Image.Dither.FLOYDSTEINBERG if dither else Image.Dither.NONE
-    quantized = rgb.quantize(palette=pal_img, dither=d)
-    # Convert back to L so downstream PNG encoding is simple/small.
-    return quantized.convert("L")
-
-
 def process_bytes(raw: bytes, spec: ImageSpec) -> bytes:
+    """Decode `raw`, resize + convert to grayscale, encode as baseline
+    grayscale JPEG."""
     with Image.open(io.BytesIO(raw)) as im:
         im.load()
         # Flatten transparency onto white before grayscale.
@@ -107,11 +111,15 @@ def process_bytes(raw: bytes, spec: ImageSpec) -> bytes:
             im = im.resize((new_w, spec.max_height), Image.Resampling.LANCZOS)
 
         im = im.convert("L")
-        im = _quantize_to_shades(im, spec.shades, spec.dither)
 
         out = io.BytesIO()
-        # optimize=True + reduced palette makes these very small.
-        im.save(out, format="PNG", optimize=True)
+        im.save(
+            out,
+            format="JPEG",
+            quality=spec.quality,
+            optimize=True,
+            progressive=False,  # CrossPoint's decoder can only preview progressive
+        )
         return out.getvalue()
 
 
@@ -138,12 +146,12 @@ class ImagePipeline:
 
     def fetch_and_process(self, url: str) -> ProcessedImage | None:
         digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
-        filename = f"img_{digest}.png"
+        filename = f"img_{digest}.jpg"
 
         if self.cache_dir:
             cached = self.cache_dir / filename
             if cached.exists():
-                return ProcessedImage(cached.read_bytes(), filename, "image/png")
+                return ProcessedImage(cached.read_bytes(), filename, "image/jpeg")
 
         try:
             raw = _download(self.client, url)
@@ -152,12 +160,12 @@ class ImagePipeline:
             return None
 
         try:
-            png = process_bytes(raw, self.spec)
+            processed = process_bytes(raw, self.spec)
         except Exception as e:  # noqa: BLE001
             log.warning("image processing failed for %s: %s", url, e)
             return None
 
         if self.cache_dir:
-            (self.cache_dir / filename).write_bytes(png)
+            (self.cache_dir / filename).write_bytes(processed)
 
-        return ProcessedImage(png, filename, "image/png")
+        return ProcessedImage(processed, filename, "image/jpeg")

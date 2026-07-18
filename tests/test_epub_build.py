@@ -18,18 +18,18 @@ from randompedia.summaries import ArticleSummary
 def _fake_png() -> bytes:
     im = Image.new("L", (50, 50), 200)
     buf = io.BytesIO()
-    im.save(buf, format="PNG")
+    im.save(buf, format="JPEG", quality=75)
     return buf.getvalue()
 
 
 class _FakePipeline:
-    """Stand-in for ImagePipeline that returns a canned PNG, no network."""
-    def __init__(self, *a, **kw): self.png = _fake_png()
+    """Stand-in for ImagePipeline that returns a canned JPEG, no network."""
+    def __init__(self, *a, **kw): self.data = _fake_png()
     def __enter__(self): return self
     def __exit__(self, *a): pass
     def close(self): pass
     def fetch_and_process(self, url):
-        return ProcessedImage(self.png, "img_fake.png", "image/png")
+        return ProcessedImage(self.data, "img_fake.jpg", "image/jpeg")
 
 
 def _sample_articles(with_image_url: bool = False) -> list[ArticleSummary]:
@@ -76,7 +76,8 @@ def test_text_only_epub_has_no_image_files(tmp_path: Path):
     )
     with zipfile.ZipFile(out) as zf:
         names = zf.namelist()
-    assert not any(n.endswith(".png") or n.endswith(".jpg") for n in names)
+    assert not any(n.endswith(".png") or n.endswith(".jpg") or n.endswith(".jpeg")
+                   for n in names)
 
 
 def test_every_image_src_resolves_to_a_file_in_the_epub(
