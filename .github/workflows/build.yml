@@ -33,6 +33,7 @@ concurrency:
 
 jobs:
   test:
+    name: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -46,6 +47,7 @@ jobs:
   build:
     needs: test
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: build ${{ matrix.label }} ${{ matrix.variant }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
@@ -121,6 +123,7 @@ jobs:
 
   release:
     needs: build
+    name: release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
