@@ -151,12 +151,18 @@ def build_epub(
     added_image_files: set[str] = set()
     toc_entries: list[epub.EpubHtml] = []  # what shows up in the reader's TOC
     spine_items: list[epub.EpubHtml] = []  # every rendered page, in order
+    # Progress cadence: ~5% granularity, floored so we emit something at
+    # least every few seconds. GitHub Actions kills long-silent steps.
+    step = max(30, min(500, max(1, total // 20)))
+    images_placed = 0
 
     try:
         for i, art in enumerate(articles, start=1):
             image: ProcessedImage | None = None
             if pipeline and art.image_url:
                 image = pipeline.fetch_and_process(art.image_url)
+                if image is not None:
+                    images_placed += 1
                 if image and image.filename not in added_image_files:
                     item = epub.EpubItem(
                         uid=f"img_{image.filename}",
@@ -215,8 +221,13 @@ def build_epub(
                 spine_items.append(ch)
                 toc_entries.append(ch)
 
-            if i % 500 == 0:
-                log.info("  %d/%d chapters built", i, total)
+            if i % step == 0 or i == total:
+                if with_images:
+                    log.info("built chapter %d/%d (%.0f%%, %d images placed)",
+                             i, total, 100 * i / total, images_placed)
+                else:
+                    log.info("built chapter %d/%d (%.0f%%)",
+                             i, total, 100 * i / total)
     finally:
         if pipeline:
             pipeline.close()
@@ -227,6 +238,7 @@ def build_epub(
     book.spine = ["nav", colophon, *spine_items]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    log.info("serializing epub to %s...", output_path)
     epub.write_epub(str(output_path), book)
     log.info("wrote %s (%.1f MB)", output_path, output_path.stat().st_size / 1e6)
 

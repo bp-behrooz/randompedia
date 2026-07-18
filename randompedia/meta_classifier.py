@@ -184,10 +184,12 @@ def classify_articles(
 
     headers = {"User-Agent": USER_AGENT, "Accept": "application/sparql-results+json"}
     with httpx.Client(headers=headers, http2=True) as client:
+        total_chunks = (len(unknown) + chunk_size - 1) // chunk_size
         for i in range(0, len(unknown), chunk_size):
             chunk = unknown[i:i + chunk_size]
-            log.debug("querying Wikidata for %d Q-IDs (chunk %d)",
-                      len(chunk), i // chunk_size + 1)
+            chunk_idx = i // chunk_size + 1
+            log.info("classifying meta articles: chunk %d/%d (%d Q-IDs)",
+                     chunk_idx, total_chunks, len(chunk))
             try:
                 bindings = _sparql_query(client, _build_query(chunk))
             except Exception as e:  # noqa: BLE001

@@ -76,6 +76,25 @@ def _configure_logging(verbosity: int) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    # At -v (INFO), silence httpx's per-request logs — they dominate the
+    # output and drown out our progress messages. -vv (DEBUG) leaves them
+    # visible so you can still see the actual HTTP traffic when debugging.
+    if verbosity < 2:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def _progress_step(total: int) -> int:
+    """How many items between progress log lines.
+
+    We aim for ~20 lines per phase (5% granularity), floored so we emit
+    something at least every ~10 seconds even on the slow (3 req/s) API
+    path. GitHub Actions kills steps that go too long without output;
+    logging every 30 items at 3 req/s = ~10 seconds gives plenty of
+    safety margin.
+    """
+    step = max(1, total // 20)
+    return min(500, max(30, step))
 
 
 def _collect_summaries_api(
@@ -83,7 +102,9 @@ def _collect_summaries_api(
     include_fair_use: bool,
 ) -> list[ArticleSummary]:
     cache = SummaryCache(cache_dir / "summaries.sqlite")
+    total = len(ranked)
     out: list[ArticleSummary] = []
+    step = _progress_step(total)
     with SummaryFetcher(
         lang=lang, cache=cache, rate_per_second=rate,
         include_fair_use_images=include_fair_use,
@@ -92,8 +113,9 @@ def _collect_summaries_api(
             s = f.fetch(rt.title)
             if s is not None:
                 out.append(s)
-            if i % 200 == 0:
-                log.info("fetched %d/%d summaries (%d kept)", i, len(ranked), len(out))
+            if i % step == 0 or i == total:
+                log.info("fetched summaries %d/%d (%.0f%%, kept %d)",
+                         i, total, 100 * i / total, len(out))
     return out
 
 
