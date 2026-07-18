@@ -117,10 +117,45 @@ ordering.
 
 ## CI
 
-`.github/workflows/build.yml` runs on the 3rd of every month (giving Wikimedia
-time to publish the previous month's pageviews) and on manual dispatch. It
-builds all four EPUBs and attaches them to a GitHub Release tagged
+`.github/workflows/build.yml` runs on the 3rd of every month (giving
+Wikimedia time to publish the previous month's pageviews) and produces
+the four EPUBs listed above, attaching them to a GitHub Release tagged
 `YYYY-MM`.
+
+The scheduled build only runs on the canonical repository
+(`everplays/randompedia`). Forks that just sit there never spam
+Wikimedia — the fork owner has to explicitly opt in by dispatching the
+workflow themselves. The `test` job runs unconditionally on every push
+and PR so forks still get CI feedback on code changes.
+
+### Building your own personal variant
+
+Want an English 5000-article edition, or images including fair-use
+content, or a different shuffle? Fork the repository and dispatch the
+workflow on your fork:
+
+```bash
+gh workflow run build-epubs --repo your-user/your-fork \
+  -f seed=my-seed -f lang=en -f include_fair_use=true
+```
+
+or via the Actions tab: **build-epubs → Run workflow**.
+
+Dispatch inputs:
+
+| Input | Default | Notes |
+|---|---|---|
+| `seed` | `randompedia-v1` | Shuffle seed. Same seed + count + lang produces the same ordering. |
+| `lang` | `en` | Wikipedia language edition. |
+| `include_fair_use` | `false` | When true, the with-images builds include fair-use images (film posters, album covers, etc.). See the note below. |
+
+**Fair-use output never lands on a GitHub Release**, on any repository.
+When you dispatch with `include_fair_use=true`, the resulting file is
+named `randompedia-<size>-images-fairuse.epub` and is available only as
+a workflow-run artifact (30-day retention, requires GitHub auth to
+download). This matches the licensing story — fair-use content is for
+personal use, not redistribution — and applies uniformly to canonical
+and forked repos alike.
 
 ## CrossPoint / FreeInkBook CSS compatibility
 

@@ -72,6 +72,13 @@ jobs:
           SEED: ${{ inputs.seed }}
         run: |
           mkdir -p out
+          # When both --with-images and --include-fair-use are on, tag the
+          # filename so the release step can drop it before publishing —
+          # fair-use output must never end up on a GitHub Release.
+          suffix=""
+          if [ "${{ inputs.with_images }}" = "true" ] && [ "${{ inputs.include_fair_use }}" = "true" ]; then
+            suffix="-fairuse"
+          fi
           randompedia \
             --count ${{ inputs.count }} \
             --lang "$LANG_CODE" \
@@ -79,12 +86,17 @@ jobs:
             --source api \
             ${{ inputs.with_images && '--with-images' || '' }} \
             ${{ (inputs.include_fair_use && inputs.with_images) && '--include-fair-use' || '' }} \
-            --output out/randompedia-${{ inputs.label }}-${{ inputs.variant }}.epub \
+            --output "out/randompedia-${{ inputs.label }}-${{ inputs.variant }}${suffix}.epub" \
             -v
 
       - uses: actions/upload-artifact@v7
         with:
-          name: randompedia-${{ inputs.label }}-${{ inputs.variant }}
+          # Artifact name mirrors the filename so it's clear in the
+          # Actions UI which runs produced personal-use fair-use output.
+          name: >-
+            randompedia-${{ inputs.label }}-${{ inputs.variant }}${{
+              (inputs.with_images && inputs.include_fair_use) && '-fairuse' || ''
+            }}
           path: out/*.epub
           if-no-files-found: error
           retention-days: 30

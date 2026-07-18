@@ -54,10 +54,22 @@ jobs:
   # other; that's fine because the 10k text job's cache is a superset of
   # the 1k one's, and both chains stay well under Wikimedia's rate limit
   # thanks to the 3 req/s per-fetcher throttle and Retry-After handling.
+  #
+  # Trigger policy on the `if:` of every build entry point:
+  #
+  #   * schedule -> only on the canonical repo (everplays/randompedia).
+  #     Forks that just sit there never hit Wikimedia on their own; the
+  #     fork owner has to explicitly dispatch to opt in.
+  #
+  #   * workflow_dispatch -> anywhere. This is how someone with a fork
+  #     produces their own personal build (e.g. an --include-fair-use
+  #     variant, or a different --seed / --lang).
 
   build-1k-text:
     needs: test
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: >-
+      (github.event_name == 'schedule' && github.repository == 'everplays/randompedia')
+      || github.event_name == 'workflow_dispatch'
     name: build 1k text
     uses: ./.github/workflows/_build-epub.yml
     with:
@@ -84,7 +96,9 @@ jobs:
 
   build-10k-text:
     needs: test
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: >-
+      (github.event_name == 'schedule' && github.repository == 'everplays/randompedia')
+      || github.event_name == 'workflow_dispatch'
     name: build 10k text
     uses: ./.github/workflows/_build-epub.yml
     with:
@@ -125,16 +139,26 @@ jobs:
         id: tag
         run: echo "tag=$(date -u +'%Y-%m')" >> "$GITHUB_OUTPUT"
 
-      - name: Verify the four expected EPUBs are present
+      - name: Filter out fair-use variants, then verify the four expected EPUBs
         run: |
           set -eu
           shopt -s nullglob
+
+          # Fair-use EPUBs are personal-use only and must never end up on
+          # a GitHub Release — not on the canonical repo, not on a fork.
+          # The workflow-run artifact still contains them (30-day
+          # retention, download from the run page), which is the right
+          # scope for personal builds. Delete them before the release
+          # step's glob picks them up.
+          rm -f out/*-fairuse.epub
+
           files=(out/*.epub)
-          if [ ${#files[@]} -eq 0 ]; then
-            echo "no .epub files found in out/" >&2
+          if [ ${#files[@]} -ne 4 ]; then
+            echo "expected 4 releasable EPUBs, got ${#files[@]}:" >&2
+            printf '  %s\n' "${files[@]}" >&2
             exit 1
           fi
-          printf 'found: %s\n' "${files[@]}"
+          printf 'releasing: %s\n' "${files[@]}"
 
       - name: Create or update GitHub Release and upload EPUBs
         env:
