@@ -44,94 +44,73 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: pytest
 
-  build:
+  # The four build jobs form two chains:
+  #     test -> build-1k-text  -> build-1k-images  -\
+  #                                                  -> release
+  #     test -> build-10k-text -> build-10k-images -/
+  # Each chain hits Wikimedia's API on the text pass and reuses the warmed
+  # SQLite summaries cache on the images pass, so the images jobs finish
+  # in a fraction of the time. The two chains run in parallel with each
+  # other; that's fine because the 10k text job's cache is a superset of
+  # the 1k one's, and both chains stay well under Wikimedia's rate limit
+  # thanks to the 3 req/s per-fetcher throttle and Retry-After handling.
+
+  build-1k-text:
     needs: test
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    name: build ${{ matrix.label }} ${{ matrix.variant }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
-    strategy:
-      # Run one at a time to stay well under Wikimedia's per-IP rate limits.
-      # GitHub Actions runners share IP ranges; four parallel jobs each doing
-      # 3 req/s look like a single 12 req/s client to Wikimedia's edge and
-      # get 429'd. Serializing also lets each job warm the summaries cache
-      # for the ones that follow — the images jobs typically finish in
-      # seconds because their text counterparts already populated it.
-      max-parallel: 1
-      fail-fast: false
-      matrix:
-        include:
-          # Order matters: text first so the same-count images job that
-          # follows can hit a warm SQLite summaries cache.
-          - count: 1000
-            label: 1k
-            variant: text
-            with_images: false
-            source: api
-          - count: 1000
-            label: 1k
-            variant: images
-            with_images: true
-            source: api
-          - count: 10000
-            label: 10k
-            variant: text
-            with_images: false
-            source: api
-          - count: 10000
-            label: 10k
-            variant: images
-            with_images: true
-            source: api
+    name: build 1k text
+    uses: ./.github/workflows/_build-epub.yml
+    with:
+      label: 1k
+      count: 1000
+      variant: text
+      with_images: false
+      lang: ${{ inputs.lang || 'en' }}
+      seed: ${{ inputs.seed || 'randompedia-v1' }}
+      include_fair_use: ${{ inputs.include_fair_use || false }}
 
-    steps:
-      - uses: actions/checkout@v7
+  build-1k-images:
+    needs: build-1k-text
+    name: build 1k images
+    uses: ./.github/workflows/_build-epub.yml
+    with:
+      label: 1k
+      count: 1000
+      variant: images
+      with_images: true
+      lang: ${{ inputs.lang || 'en' }}
+      seed: ${{ inputs.seed || 'randompedia-v1' }}
+      include_fair_use: ${{ inputs.include_fair_use || false }}
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: "pip"
+  build-10k-text:
+    needs: test
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: build 10k text
+    uses: ./.github/workflows/_build-epub.yml
+    with:
+      label: 10k
+      count: 10000
+      variant: text
+      with_images: false
+      lang: ${{ inputs.lang || 'en' }}
+      seed: ${{ inputs.seed || 'randompedia-v1' }}
+      include_fair_use: ${{ inputs.include_fair_use || false }}
 
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .
-
-      - name: Restore cache
-        uses: actions/cache@v6
-        with:
-          path: .cache
-          key: randompedia-${{ inputs.lang || 'en' }}-${{ matrix.label }}-${{ matrix.variant }}-${{ github.run_id }}
-          restore-keys: |
-            randompedia-${{ inputs.lang || 'en' }}-${{ matrix.label }}-${{ matrix.variant }}-
-            randompedia-${{ inputs.lang || 'en' }}-${{ matrix.label }}-
-            randompedia-${{ inputs.lang || 'en' }}-
-
-      - name: Build EPUB
-        env:
-          LANG_CODE: ${{ inputs.lang || 'en' }}
-          SEED: ${{ inputs.seed || 'randompedia-v1' }}
-        run: |
-          mkdir -p out
-          randompedia \
-            --count ${{ matrix.count }} \
-            --lang "$LANG_CODE" \
-            --seed "$SEED" \
-            --source ${{ matrix.source }} \
-            ${{ matrix.with_images && '--with-images' || '' }} \
-            ${{ (inputs.include_fair_use && matrix.with_images) && '--include-fair-use' || '' }} \
-            --output out/randompedia-${{ matrix.label }}-${{ matrix.variant }}.epub \
-            -v
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: randompedia-${{ matrix.label }}-${{ matrix.variant }}
-          path: out/*.epub
-          if-no-files-found: error
-          retention-days: 30
+  build-10k-images:
+    needs: build-10k-text
+    name: build 10k images
+    uses: ./.github/workflows/_build-epub.yml
+    with:
+      label: 10k
+      count: 10000
+      variant: images
+      with_images: true
+      lang: ${{ inputs.lang || 'en' }}
+      seed: ${{ inputs.seed || 'randompedia-v1' }}
+      include_fair_use: ${{ inputs.include_fair_use || false }}
 
   release:
-    needs: build
+    needs: [build-1k-text, build-1k-images, build-10k-text, build-10k-images]
     name: release
     runs-on: ubuntu-latest
     steps:

@@ -1,0 +1,90 @@
+name: _build-epub
+
+# Reusable workflow. Called four times from build.yml — once per
+# (count, variant) combination. Extracted so the top-level file expresses
+# only the dependency graph (text -> images per count), not the details
+# of how a single EPUB gets built.
+
+on:
+  workflow_call:
+    inputs:
+      label:
+        description: "Short label used in filenames (e.g. 1k, 10k)."
+        required: true
+        type: string
+      count:
+        description: "Number of articles."
+        required: true
+        type: number
+      variant:
+        description: "text or images."
+        required: true
+        type: string
+      with_images:
+        description: "Include lead images."
+        required: true
+        type: boolean
+      lang:
+        required: true
+        type: string
+      seed:
+        required: true
+        type: string
+      include_fair_use:
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      # Cache scope. Each (lang, label) has its own cache; both variants
+      # (text/images) of the same count share it via the restore-keys
+      # ladder, so the images job automatically inherits the summary
+      # SQLite that its text prerequisite just populated.
+      - name: Restore cache
+        uses: actions/cache@v6
+        with:
+          path: .cache
+          key: randompedia-${{ inputs.lang }}-${{ inputs.label }}-${{ inputs.variant }}-${{ github.run_id }}
+          restore-keys: |
+            randompedia-${{ inputs.lang }}-${{ inputs.label }}-${{ inputs.variant }}-
+            randompedia-${{ inputs.lang }}-${{ inputs.label }}-
+            randompedia-${{ inputs.lang }}-
+
+      - name: Build EPUB
+        env:
+          LANG_CODE: ${{ inputs.lang }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          mkdir -p out
+          randompedia \
+            --count ${{ inputs.count }} \
+            --lang "$LANG_CODE" \
+            --seed "$SEED" \
+            --source api \
+            ${{ inputs.with_images && '--with-images' || '' }} \
+            ${{ (inputs.include_fair_use && inputs.with_images) && '--include-fair-use' || '' }} \
+            --output out/randompedia-${{ inputs.label }}-${{ inputs.variant }}.epub \
+            -v
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: randompedia-${{ inputs.label }}-${{ inputs.variant }}
+          path: out/*.epub
+          if-no-files-found: error
+          retention-days: 30
