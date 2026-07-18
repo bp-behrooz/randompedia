@@ -10,12 +10,28 @@ served by Wikipedia's mobile page-preview card). The `--with-images` variants
 include the article's lead image, converted to a 4-bit grayscale, dithered PNG
 so it looks good and stays small on e-ink hardware.
 
-Four artifacts are produced per release:
+Six artifacts are produced per release:
 
 - `randompedia-1k-text.epub`
 - `randompedia-1k-images.epub`
+- `randompedia-5k-text.epub`
+- `randompedia-5k-images.epub`
 - `randompedia-10k-text.epub`
 - `randompedia-10k-images.epub`
+
+## Download
+
+Latest builds are attached to the most recent
+[GitHub Release](https://github.com/everplays/randompedia/releases/latest).
+These direct links always point at the latest month's build — no need
+to update them:
+
+- [randompedia-1k-text.epub](https://github.com/everplays/randompedia/releases/latest/download/randompedia-1k-text.epub)
+- [randompedia-1k-images.epub](https://github.com/everplays/randompedia/releases/latest/download/randompedia-1k-images.epub)
+- [randompedia-5k-text.epub](https://github.com/everplays/randompedia/releases/latest/download/randompedia-5k-text.epub)
+- [randompedia-5k-images.epub](https://github.com/everplays/randompedia/releases/latest/download/randompedia-5k-images.epub)
+- [randompedia-10k-text.epub](https://github.com/everplays/randompedia/releases/latest/download/randompedia-10k-text.epub)
+- [randompedia-10k-images.epub](https://github.com/everplays/randompedia/releases/latest/download/randompedia-10k-images.epub)
 
 ## How it works
 

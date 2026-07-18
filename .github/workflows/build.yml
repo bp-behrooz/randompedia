@@ -44,16 +44,19 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: pytest
 
-  # The four build jobs form two chains:
+  # The build jobs form three chains, one per article count:
   #     test -> build-1k-text  -> build-1k-images  -\
-  #                                                  -> release
+  #     test -> build-5k-text  -> build-5k-images  -+-> release
   #     test -> build-10k-text -> build-10k-images -/
   # Each chain hits Wikimedia's API on the text pass and reuses the warmed
   # SQLite summaries cache on the images pass, so the images jobs finish
-  # in a fraction of the time. The two chains run in parallel with each
-  # other; that's fine because the 10k text job's cache is a superset of
-  # the 1k one's, and both chains stay well under Wikimedia's rate limit
-  # thanks to the 3 req/s per-fetcher throttle and Retry-After handling.
+  # in a fraction of the time. The three chains run in parallel with each
+  # other; all stay under Wikimedia's per-IP rate limit thanks to the
+  # 3 req/s per-fetcher throttle and Retry-After handling.
+  #
+  # Cache prefix reuse across chains is also intentional: 5k's summaries
+  # are a subset of 10k's, so a second dispatch (with 10k's cache warm)
+  # makes 5k's text pass a hit-only walk instead of live API traffic.
   #
   # Trigger policy on the `if:` of every build entry point:
   #
@@ -94,6 +97,35 @@ jobs:
       seed: ${{ inputs.seed || 'randompedia-v1' }}
       include_fair_use: ${{ inputs.include_fair_use || false }}
 
+  build-5k-text:
+    needs: test
+    if: >-
+      (github.event_name == 'schedule' && github.repository == 'everplays/randompedia')
+      || github.event_name == 'workflow_dispatch'
+    name: build 5k text
+    uses: ./.github/workflows/_build-epub.yml
+    with:
+      label: 5k
+      count: 5000
+      variant: text
+      with_images: false
+      lang: ${{ inputs.lang || 'en' }}
+      seed: ${{ inputs.seed || 'randompedia-v1' }}
+      include_fair_use: ${{ inputs.include_fair_use || false }}
+
+  build-5k-images:
+    needs: build-5k-text
+    name: build 5k images
+    uses: ./.github/workflows/_build-epub.yml
+    with:
+      label: 5k
+      count: 5000
+      variant: images
+      with_images: true
+      lang: ${{ inputs.lang || 'en' }}
+      seed: ${{ inputs.seed || 'randompedia-v1' }}
+      include_fair_use: ${{ inputs.include_fair_use || false }}
+
   build-10k-text:
     needs: test
     if: >-
@@ -124,7 +156,7 @@ jobs:
       include_fair_use: ${{ inputs.include_fair_use || false }}
 
   release:
-    needs: [build-1k-text, build-1k-images, build-10k-text, build-10k-images]
+    needs: [build-1k-text, build-1k-images, build-5k-text, build-5k-images, build-10k-text, build-10k-images]
     name: release
     runs-on: ubuntu-latest
     steps:
@@ -153,8 +185,8 @@ jobs:
           rm -f out/*-fairuse.epub
 
           files=(out/*.epub)
-          if [ ${#files[@]} -ne 4 ]; then
-            echo "expected 4 releasable EPUBs, got ${#files[@]}:" >&2
+          if [ ${#files[@]} -ne 6 ]; then
+            echo "expected 6 releasable EPUBs, got ${#files[@]}:" >&2
             printf '  %s\n' "${files[@]}" >&2
             exit 1
           fi
@@ -171,6 +203,8 @@ jobs:
 
           - `randompedia-1k-text.epub` — top 1k articles, text only
           - `randompedia-1k-images.epub` — top 1k articles, with dithered lead images
+          - `randompedia-5k-text.epub` — top 5k articles, text only
+          - `randompedia-5k-images.epub` — top 5k articles, with dithered lead images
           - `randompedia-10k-text.epub` — top 10k articles, text only
           - `randompedia-10k-images.epub` — top 10k articles, with dithered lead images
 
