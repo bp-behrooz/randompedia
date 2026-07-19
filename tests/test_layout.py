@@ -34,7 +34,7 @@ class _FakePipeline:
     def __exit__(self, *a): pass
     def close(self): pass
     def fetch_and_process(self, url):
-        return ProcessedImage(self.data, "fake.jpg", "image/jpeg")
+        return ProcessedImage(self.data, "img_fake.jpg", "image/jpeg")
 
 
 def _art(with_image: bool = True, with_desc: bool = True) -> ArticleSummary:
