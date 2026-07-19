@@ -127,9 +127,23 @@ jobs:
             fi
           fi
 
-      - uses: actions/upload-artifact@v7
+      # One artifact per EPUB. Uploading both text and images under a
+      # single artifact name would collide (upload-artifact@v4+ treats
+      # the name as the artifact identity, not a folder), so we split
+      # them into two uploads with distinct names. This also makes the
+      # run page show all six EPUBs individually.
+      - name: Upload text EPUB
+        uses: actions/upload-artifact@v7
         with:
-          name: randompedia-${{ inputs.label }}
-          path: out/randompedia-${{ inputs.label }}-*.epub
+          name: randompedia-${{ inputs.label }}-text
+          path: out/randompedia-${{ inputs.label }}-text.epub
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload images EPUB
+        uses: actions/upload-artifact@v7
+        with:
+          name: randompedia-${{ inputs.label }}-images${{ inputs.include_fair_use && '-fairuse' || '' }}
+          path: out/randompedia-${{ inputs.label }}-images*.epub
           if-no-files-found: error
           retention-days: 30
