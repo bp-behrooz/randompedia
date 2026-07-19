@@ -104,14 +104,15 @@ def test_every_image_src_resolves_to_a_file_in_the_epub(
 
     with zipfile.ZipFile(out) as zf:
         names = set(zf.namelist())
-        # Find every chapter, parse its <img src=...>, and confirm the target exists.
+        # Find every bundle xhtml (they hold all article content since
+        # the 2026-07 bundling refactor), parse its <img src=...>, and
+        # confirm the target exists.
         import re
         img_re = re.compile(rb'<img[^>]*\bsrc="([^"]+)"')
-        # Match article chapters (chNNNNN_ prefix), which excludes nav,
-        # colophon, and the generated cover.xhtml.
-        article_re = re.compile(r'/ch\d+_')
-        chapters = [n for n in names if n.endswith(".xhtml") and article_re.search(n)]
-        assert chapters, "no chapters found"
+        # Match bundle files: EPUB/b0000.xhtml, b0001.xhtml, ...
+        bundle_re = re.compile(r'/b\d+\.xhtml$')
+        chapters = [n for n in names if bundle_re.search(n)]
+        assert chapters, "no bundle xhtml files found"
 
         found_any_img = False
         for chap in chapters:
@@ -157,8 +158,7 @@ def test_chapter_title_is_plain_text_not_html(tmp_path: Path):
 
     with zipfile.ZipFile(out) as zf:
         chap = next(n for n in zf.namelist()
-                    if n.endswith(".xhtml")
-                    and re.search(r'/ch\d+_', n))
+                    if re.search(r'/b\d+\.xhtml$', n))
         html = zf.read(chap).decode("utf-8")
     assert "<h1>Cristiano Ronaldo</h1>" in html
     assert "mw-page-title-main" not in html
@@ -185,15 +185,23 @@ def test_stable_book_id_is_deterministic():
     assert a.startswith("urn:randompedia:")
 
 
-def test_chapter_count_matches_article_count(tmp_path: Path):
+def test_article_count_matches_anchor_count(tmp_path: Path):
+    """Every article gets an `<a id="aN"></a>` anchor inside its bundle.
+    Count them across all bundles and compare against the article
+    count. This replaces the pre-bundling one-xhtml-per-article check;
+    with bundling, spine size no longer equals article count but the
+    total anchor count must."""
     articles = _sample_articles()
     out = tmp_path / "count.epub"
     build_epub(articles=articles, output_path=out, meta=_meta(), with_images=False)
     with zipfile.ZipFile(out) as zf:
-        # Exclude nav, colophon, and the generated cover.xhtml; only
-        # count real article chapters.
-        chapters = [
-            n for n in zf.namelist()
-            if n.endswith(".xhtml") and re.search(r'/ch\d+_', n)
-        ]
-    assert len(chapters) == len(articles)
+        bundles = [n for n in zf.namelist()
+                   if re.search(r'/b\d+\.xhtml$', n)]
+        anchors: list[str] = []
+        for b in bundles:
+            anchors.extend(re.findall(r'<a id="a\d+"></a>',
+                                      zf.read(b).decode("utf-8")))
+    assert len(anchors) == len(articles), (
+        f"expected {len(articles)} article anchors across {len(bundles)} "
+        f"bundles, got {len(anchors)}"
+    )

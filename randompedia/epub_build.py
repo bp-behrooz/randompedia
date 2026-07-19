@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import html
 import logging
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -47,55 +46,74 @@ class BookMeta:
     seed: str
 
 
-_SAFE_ID_RE = re.compile(r"[^A-Za-z0-9]+")
+_SAFE_ID_RE = None  # historical; no longer used after bundling refactor
+
+# How many articles go into one bundle xhtml (== one spine item). (== one spine item).
+#
+# CrossPoint 1.4.1 allocates several `std::deque<T>(spineCount)`
+# structures in RAM during BookMetadataCache::buildBookBin
+# (lib/Epub/Epub/BookMetadataCache.cpp:237,269,272,291). On the ~380 KB
+# ESP32-C3 heap this crashes past a few hundred spine items — we
+# measured 1k working, 5k crashing.
+#
+# 100 gives 10k articles / 100 = 100 spine items (safely under the
+# threshold) while keeping each bundle xhtml at a few hundred KB, which
+# CrossPoint's streaming ChapterHtmlSlimParser handles fine (chapter
+# parsing is streamed off SD, not held in RAM).
+_BUNDLE_SIZE = 100
 
 
-def _chapter_id(key: str, index: int) -> str:
-    safe = _SAFE_ID_RE.sub("_", key)[:40].strip("_") or "article"
-    return f"ch{index:05d}_{safe}"
-
-
-def _render_cover_html(art: ArticleSummary, image: ProcessedImage) -> str:
-    """The "cover" page of an article: title, subtitle, image. Rendered as a
-    separate spine item so the summary starts on a fresh page on readers
-    (e.g. CrossPoint / FreeInkBook) that don't honour CSS page-break rules.
-    Spine boundaries are the only reliable page break on those engines."""
-    title_esc = html.escape(art.title)
-    desc = f'<p class="desc">{html.escape(art.description)}</p>' if art.description else ""
-    img_html = (
-        f'<figure class="lead-image">'
-        f'<img src="images/{image.filename}" alt=""/></figure>'
-    )
-    return f'<h1>{title_esc}</h1>\n{desc}{img_html}\n'
-
-
-def _render_body_html(
-    art: ArticleSummary, *, index: int, total: int, repeat_title: bool,
+def _render_article_block(
+    art: ArticleSummary, *, index: int, total: int, image: ProcessedImage | None,
 ) -> str:
-    """The summary + footer page. When the article had a cover page we still
-    repeat the title so a reader landing on the body page has context; when
-    there was no cover, this IS the whole article page."""
+    """Render one article as a self-contained HTML block inside a bundle
+    xhtml. The leading `<a id="a{index}">` is what CrossPoint anchors on
+    to force a page break at the article boundary — see
+    lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp:194 in crosspoint-reader,
+    which calls flushPendingAnchor -> completePageFn whenever a `<a id>`
+    matches a TOC entry for the current spine item. As long as the TOC
+    lists `bundle.xhtml#a{index}` for each article, CrossPoint starts a
+    fresh page here."""
     title_esc = html.escape(art.title)
-    header = f'<h1>{title_esc}</h1>\n' if repeat_title else (
-        f'<h1>{title_esc}</h1>\n'
-        + (f'<p class="desc">{html.escape(art.description)}</p>' if art.description else "")
-    )
+    desc = (f'<p class="desc">{html.escape(art.description)}</p>'
+            if art.description else "")
+    img_html = ""
+    if image is not None:
+        img_html = (
+            f'<figure class="lead-image">'
+            f'<img src="images/{image.filename}" alt=""/></figure>\n'
+        )
     body = art.extract_html or f"<p>{html.escape(art.extract_text)}</p>"
-    # Text-based separator + footer. We use <p> (not <div>) because
-    # CrossPoint's renderer only honours `display: none` — every other
-    # `display` value is ignored, meaning back-to-back <div>s collapse into
-    # a single inline run there. <p> is treated as a block by default, so
-    # the separator, the footer, and the summary each get their own line.
-    attribution = (
+    footer = (
         '<p class="footer-rule">· · ·</p>\n'
         f'<p class="attribution">{index}/{total} &middot; '
         f'From <a href="{html.escape(art.url)}">Wikipedia</a>, '
         f'CC BY-SA 4.0</p>'
     )
+    # The anchor must be an EMPTY element that precedes the first
+    # renderable block; CrossPoint's parser only fires the page break
+    # when it sees the anchor id, not the content that follows.
     return (
-        f'{header}'
+        f'<a id="a{index}"></a>\n'
+        f'<h1>{title_esc}</h1>\n'
+        f'{desc}'
+        f'{img_html}'
         f'<div class="summary">{body}</div>\n'
-        f'{attribution}\n'
+        f'{footer}\n'
+    )
+
+
+def _wrap_bundle_html(inner: str, *, lang: str, title: str) -> str:
+    """Wrap a concatenation of article blocks in a minimal xhtml
+    document. epub:type / role attributes are dropped — CrossPoint
+    doesn't use them and they only inflate the file."""
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n'
+        '<!DOCTYPE html>\n'
+        f'<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="{lang}" lang="{lang}">\n'
+        f'<head><meta charset="utf-8"/><title>{html.escape(title)}</title>'
+        '<link rel="stylesheet" type="text/css" href="styles/main.css"/></head>\n'
+        f'<body>\n{inner}</body>\n</html>\n'
     )
 
 
@@ -159,12 +177,58 @@ def build_epub(
         pipeline = ImagePipeline(spec=image_spec, cache_dir=image_cache_dir)
 
     added_image_files: set[str] = set()
-    toc_entries: list[epub.EpubHtml] = []  # what shows up in the reader's TOC
-    spine_items: list[epub.EpubHtml] = []  # every rendered page, in order
+    # Bundle articles into groups of _BUNDLE_SIZE and emit ONE xhtml per
+    # group as a single spine item. This is the crucial workaround for
+    # CrossPoint's spine-count RAM ceiling (see the note near
+    # book.spine below and lib/Epub/Epub/BookMetadataCache.cpp:237,269
+    # in the CrossPoint source: several std::deque<T>(spineCount)
+    # allocations sit in RAM during build_bin, so 10k spine items
+    # blows the ~380 KB heap on ESP32-C3).
+    #
+    # Per-article page breaks are preserved by putting an empty
+    # `<a id="a{index}"></a>` before each article and listing that
+    # anchor in the TOC as `b{bundle}.xhtml#a{index}`. CrossPoint's
+    # ChapterHtmlSlimParser::flushPendingAnchor
+    # (lib/Epub/Epub/parsers/ChapterHtmlSlimParser.cpp:194) forces a
+    # page break whenever it sees an anchor id that appears in the
+    # current spine item's TOC-anchor list. Verified from source.
+    spine_items: list[epub.EpubHtml] = []
+    # (bundle_item, [(title, "b{n}.xhtml#a{index}"), ...]) — used to
+    # emit the TOC nav+NCX after the whole loop completes so ebooklib
+    # can build the ordered hierarchy in one pass.
+    toc_entries: list[tuple[epub.EpubHtml, list[tuple[str, str]]]] = []
     # Progress cadence: ~5% granularity, floored so we emit something at
     # least every few seconds. GitHub Actions kills long-silent steps.
     step = max(30, min(500, max(1, total // 20)))
     images_placed = 0
+
+    # State for the currently-open bundle.
+    bundle_index = 0
+    bundle_html_parts: list[str] = []
+    bundle_toc_entries: list[tuple[str, str]] = []
+
+    def flush_bundle() -> None:
+        """Commit the current bundle as a spine item and start a fresh one."""
+        nonlocal bundle_index, bundle_html_parts, bundle_toc_entries
+        if not bundle_html_parts:
+            return
+        file_name = f"b{bundle_index:04d}.xhtml"
+        item = epub.EpubItem(
+            uid=f"b{bundle_index}",
+            file_name=file_name,
+            media_type="application/xhtml+xml",
+            content=_wrap_bundle_html(
+                "".join(bundle_html_parts),
+                lang=meta.lang,
+                title=f"Bundle {bundle_index + 1}",
+            ).encode("utf-8"),
+        )
+        book.add_item(item)
+        spine_items.append(item)
+        toc_entries.append((item, bundle_toc_entries))
+        bundle_index += 1
+        bundle_html_parts = []
+        bundle_toc_entries = []
 
     try:
         for i, art in enumerate(articles, start=1):
@@ -174,62 +238,23 @@ def build_epub(
                 if image is not None:
                     images_placed += 1
                 if image and image.filename not in added_image_files:
-                    item = epub.EpubItem(
-                        uid=f"img_{image.filename}",
+                    img_item = epub.EpubItem(
+                        uid=image.filename.rsplit(".", 1)[0],
                         file_name=f"images/{image.filename}",
                         media_type=image.media_type,
                         content=image.data,
                     )
-                    book.add_item(item)
+                    book.add_item(img_item)
                     added_image_files.add(image.filename)
 
-            cid = _chapter_id(art.key, i)
+            bundle_html_parts.append(_render_article_block(
+                art, index=i, total=total, image=image,
+            ))
+            file_name = f"b{bundle_index:04d}.xhtml"
+            bundle_toc_entries.append((art.title, f"{file_name}#a{i}"))
 
-            if image is not None:
-                # Two-page article: cover (title + image) then body (summary).
-                # The cover exists purely to occupy its own page on readers
-                # that don't support CSS page breaks — spine boundaries are
-                # the only reliable page break on CrossPoint / FreeInkBook.
-                cover = epub.EpubHtml(
-                    title=f"{art.title} (cover)",
-                    file_name=f"{cid}_cover.xhtml",
-                    lang=meta.lang,
-                    uid=f"{cid}_cover",
-                )
-                cover.content = _render_cover_html(art, image=image)
-                cover.add_item(css)
-                book.add_item(cover)
-                spine_items.append(cover)
-
-                body = epub.EpubHtml(
-                    title=art.title,
-                    file_name=f"{cid}.xhtml",
-                    lang=meta.lang,
-                    uid=cid,
-                )
-                body.content = _render_body_html(
-                    art, index=i, total=total, repeat_title=True,
-                )
-                body.add_item(css)
-                book.add_item(body)
-                spine_items.append(body)
-                toc_entries.append(body)
-            else:
-                # Single-page article (no image): title + subtitle + summary
-                # all in one spine item.
-                ch = epub.EpubHtml(
-                    title=art.title,
-                    file_name=f"{cid}.xhtml",
-                    lang=meta.lang,
-                    uid=cid,
-                )
-                ch.content = _render_body_html(
-                    art, index=i, total=total, repeat_title=False,
-                )
-                ch.add_item(css)
-                book.add_item(ch)
-                spine_items.append(ch)
-                toc_entries.append(ch)
+            if len(bundle_html_parts) >= _BUNDLE_SIZE:
+                flush_bundle()
 
             if i % step == 0 or i == total:
                 if with_images:
@@ -238,20 +263,32 @@ def build_epub(
                 else:
                     log.info("built chapter %d/%d (%.0f%%)",
                              i, total, 100 * i / total)
+        flush_bundle()  # tail bundle if the last group wasn't full
     finally:
         if pipeline:
             pipeline.close()
 
-    book.toc = (colophon, *toc_entries)
+    # TOC: nav + NCX list each article as `b{n}.xhtml#a{i}`. These files
+    # grow linearly with article count (~150 bytes/entry), reaching ~1.5 MB
+    # for a 10k book, but that's fine — CrossPoint STREAMS the nav/NCX to
+    # disk (BookMetadataCache) rather than holding them in RAM. What
+    # actually blows the heap is spine count, which the bundling above
+    # caps at ceil(total / _BUNDLE_SIZE). At 10k articles that's 100
+    # spine items instead of the original 10001, cutting the
+    # BookMetadataCache::buildBookBin std::deque<T>(spineCount)
+    # allocations from ~260 KB to ~2.6 KB.
+    #
+    # The nav and NCX are declared in the manifest (spec-required for
+    # EPUB 3) but stay OUT of the spine — CrossPoint has no interactive
+    # TOC UI so a spine entry pointing at nav would just be a dead page.
+    book.toc = tuple(
+        (epub.Section(f"Bundle {i + 1}"),
+         tuple(epub.Link(href, title, f"toc_b{i}_a{n}")
+               for n, (title, href) in enumerate(entries)))
+        for i, (item, entries) in enumerate(toc_entries)
+    )
     book.add_item(epub.EpubNcx())
     book.add_item(epub.EpubNav())
-    # The nav and NCX stay in the manifest (spec-required for EPUB 3;
-    # capable readers surface them as a TOC menu), but we deliberately
-    # OMIT them from the spine — CrossPoint has no interactive TOC and
-    # would otherwise force readers to page through thousands of link-
-    # only entries before reaching the first article. Starting the spine
-    # at the colophon means CrossPoint opens on 'About this book' and
-    # page-forward goes straight into the shuffled articles.
     book.spine = [colophon, *spine_items]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

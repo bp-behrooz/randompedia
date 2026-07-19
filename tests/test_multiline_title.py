@@ -1,7 +1,7 @@
 """Tests for the CSS hints that help title + image stay together on
 readers that DO honour page-break CSS (Kindle, Calibre, iBooks). On
-CrossPoint / FreeInkBook the guarantee comes from splitting each
-image-bearing article into two spine items — see test_layout.py."""
+CrossPoint / FreeInkBook the guarantee comes from the per-article
+`<a id="aN">` anchor listed in the TOC — see test_layout.py."""
 import io
 import zipfile
 from pathlib import Path

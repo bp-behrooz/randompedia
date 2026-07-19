@@ -145,8 +145,13 @@ class ImagePipeline:
         self.close()
 
     def fetch_and_process(self, url: str) -> ProcessedImage | None:
-        digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
-        filename = f"img_{digest}.jpg"
+        # Short filename — every image ends up in the OPF manifest as
+        # both `href` and `id`, and at 10k articles those bytes matter
+        # for CrossPoint (see the note in epub_build._chapter_id). 12
+        # hex chars = 48 bits of collision resistance, which is plenty
+        # for at most ~10k unique image URLs per book.
+        digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
+        filename = f"{digest}.jpg"
 
         if self.cache_dir:
             cached = self.cache_dir / filename
