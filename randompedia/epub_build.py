@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import html
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -48,6 +49,38 @@ class BookMeta:
 
 _SAFE_ID_RE = None  # historical; no longer used after bundling refactor
 
+
+# XML has only five built-in named entities. Everything else — &nbsp;
+# &middot; &hellip; &copy; and the whole HTML5 catalogue — is illegal
+# without a DTD, and CrossPoint's expat runs in strict XML mode with no
+# DTD (verified on-device: a single stray &middot; in a bundle xhtml
+# aborts the parse and leaves the "Indexing" popup stuck forever).
+_XML_BUILTIN_ENTITIES = {"amp", "lt", "gt", "quot", "apos"}
+# `&name;` where name is [A-Za-z][A-Za-z0-9]* — matches HTML5 named
+# entities. Numeric entities (&#123; / &#xABCD;) are skipped by the
+# leading `[A-Za-z]` requirement and remain untouched (valid XML).
+_NAMED_ENTITY_RE = re.compile(r"&([A-Za-z][A-Za-z0-9]*);")
+
+
+def _xml_safe_entities(s: str) -> str:
+    """Replace HTML-only named entities with their UTF-8 character so
+    the result parses as strict XML. Leaves numeric entities and the
+    five XML built-ins alone."""
+    def repl(m: "re.Match[str]") -> str:
+        name = m.group(1)
+        if name in _XML_BUILTIN_ENTITIES:
+            return m.group(0)
+        # html.unescape handles the full HTML5 entity table. If it
+        # doesn't recognise the name it returns the original text
+        # unchanged, in which case we fall back to emitting the raw
+        # ampersand escaped — better than shipping a hard XML error.
+        decoded = html.unescape(m.group(0))
+        if decoded == m.group(0):
+            return "&amp;" + m.group(0)[1:]
+        return decoded
+    return _NAMED_ENTITY_RE.sub(repl, s)
+
+
 # How many articles go into one bundle xhtml (== one spine item). (== one spine item).
 #
 # CrossPoint 1.4.1 allocates several `std::deque<T>(spineCount)`
@@ -83,10 +116,17 @@ def _render_article_block(
             f'<figure class="lead-image">'
             f'<img src="images/{image.filename}" alt=""/></figure>\n'
         )
-    body = art.extract_html or f"<p>{html.escape(art.extract_text)}</p>"
+    body = _xml_safe_entities(art.extract_html or f"<p>{html.escape(art.extract_text)}</p>")
     footer = (
         '<p class="footer-rule">· · ·</p>\n'
-        f'<p class="attribution">{index}/{total} &middot; '
+        # Numeric entity, NOT `&middot;`: bundle xhtml is served to
+        # CrossPoint's expat parser in strict XML mode with no DTD,
+        # so any HTML-only named entity aborts the parse silently and
+        # leaves the "Indexing" popup stuck on screen forever (verified
+        # on-device on Xteink X4 / CrossPoint 1.4.1). Numeric entities
+        # and the five built-in XML entities (&amp; &lt; &gt; &quot;
+        # &apos;) are the only entity forms safe to emit here.
+        f'<p class="attribution">{index}/{total} &#183; '
         f'From <a href="{html.escape(art.url)}">Wikipedia</a>, '
         f'CC BY-SA 4.0</p>'
     )

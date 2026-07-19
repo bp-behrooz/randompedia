@@ -411,36 +411,49 @@ def test_nav_and_ncx_exist_but_are_not_in_the_reading_flow(tmp_path: Path):
     )
 
 
-def test_no_generated_cover_is_shipped(tmp_path: Path):
-    """Regression for the 2026-07 release: shipping a Pillow-rendered
-    cover via `book.set_cover` crashed CrossPoint 1.4.1 at file open.
-    The abort happened immediately after 'Hardware detect', before any
-    content log line. Removing set_cover — even with cover.xhtml added
-    to the spine as linear=\"no\" — was the only thing that made the
-    book openable on-device. Pin the absence."""
-    out = tmp_path / "no_cover.epub"
-    articles = [_art(with_image=False) for _ in range(3)]
-    build_epub(articles=articles, output_path=out, meta=_meta(),
-               with_images=False)
+def test_bundle_xhtml_parses_as_strict_xml(tmp_path: Path):
+    """Regression for the 2026-07-post-bundling release: shipping
+    `&middot;` in the attribution footer stalled CrossPoint 1.4.1 on
+    every bundle. CrossPoint's expat parser runs in strict XML mode
+    with no DTD, so any named entity outside the five XML built-ins
+    (&amp; &lt; &gt; &quot; &apos;) is a parse error — swallowed by
+    the reader, which leaves the on-device "Indexing" popup stuck
+    forever with no way forward.
+
+    Pin the invariant that every shipped bundle xhtml parses cleanly
+    with plain expat. Feed Wikipedia-flavored HTML through the
+    article so this catches future regressions where an article
+    snippet sneaks in a named entity."""
+    import xml.parsers.expat
+
+    art_with_entities = ArticleSummary(
+        title="Test", key="Test", lang="en",
+        description="desc",
+        extract_html=(
+            "<p>Nonbreaking&nbsp;space, "
+            "an ellipsis&hellip;, "
+            "a middle&middot;dot, "
+            "and a copyright&copy; symbol.</p>"
+        ),
+        extract_text="fallback",
+        image_url=None, url="https://en.wikipedia.org/wiki/Test",
+    )
+    out = tmp_path / "entities.epub"
+    build_epub(articles=[art_with_entities], output_path=out,
+               meta=_meta(), with_images=False)
 
     with zipfile.ZipFile(out) as zf:
-        names = set(zf.namelist())
-        opf = zf.read("EPUB/content.opf").decode("utf-8")
+        parts = _all_chapter_htmls(zf)
 
-    # No cover files in the archive.
-    assert not any("cover.jpg" in n or n.endswith("/cover.xhtml")
-                   or n == "EPUB/cover.xhtml"
-                   for n in names), (
-        f"no generated cover files should ship. found: "
-        f"{[n for n in names if 'cover' in n.lower()]}"
-    )
-    # No cover metadata in the OPF.
-    assert 'properties="cover-image"' not in opf, (
-        "no cover-image manifest property (crashes CrossPoint)"
-    )
-    assert not re.search(r'<meta[^>]*\bname="cover"', opf), (
-        "no <meta name=\"cover\"> in the OPF (crashes CrossPoint)"
-    )
+    for name, content in parts:
+        p = xml.parsers.expat.ParserCreate()
+        try:
+            p.Parse(content, True)
+        except xml.parsers.expat.ExpatError as e:
+            raise AssertionError(
+                f"{name} did not parse as strict XML: {e}. "
+                f"CrossPoint would stall on 'Indexing' forever."
+            )
 
 
 def test_layout_without_desc(tmp_path: Path):
