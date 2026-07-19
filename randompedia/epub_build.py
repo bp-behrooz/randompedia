@@ -248,10 +248,16 @@ def build_epub(
     # capable readers surface them as a TOC menu), but we deliberately
     # OMIT them from the spine — CrossPoint has no interactive TOC and
     # would otherwise force readers to page through thousands of link-
-    # only entries before reaching the first article. Starting the spine
-    # at the colophon means CrossPoint opens on it, and page-forward
-    # goes straight into the shuffled articles.
-    book.spine = [colophon, *spine_items]
+    # only entries before reaching the first article.
+    #
+    # `set_cover` (above) added an EpubCoverHtml wrapper to the manifest,
+    # but ebooklib does NOT auto-insert it into the spine when we assign
+    # book.spine explicitly. Put it in as the first item so the book
+    # opens on the cover on CrossPoint and other simple readers.
+    # Assigning by id keeps the item's `is_linear = False` marker so
+    # ebooklib emits `linear="no"` on the itemref — capable readers
+    # still won't count the cover as a reading-flow page.
+    book.spine = ["cover", colophon, *spine_items]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     log.info("serializing epub to %s...", output_path)

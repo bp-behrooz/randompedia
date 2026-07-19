@@ -219,9 +219,48 @@ def test_nav_and_ncx_exist_but_are_not_in_the_reading_flow(tmp_path: Path):
     )
     assert "ncx" not in spine_ids
 
-    # First spine item should be the colophon (users open on 'About this book').
-    assert spine_ids[0] == "colophon", (
-        f"expected spine to start on colophon, got {spine_ids[0]}"
+    # First spine item should be the cover (readers open on it). It must
+    # carry `linear="no"` so capable readers still don't count it as part
+    # of the reading flow — the colophon is the intended first "real" page.
+    assert spine_ids[0] == "cover", (
+        f"expected spine to start on cover, got {spine_ids[0]}"
+    )
+    assert re.search(r'<itemref[^>]*\bidref="cover"[^>]*\blinear="no"', opf), (
+        "cover must be marked linear=\"no\" so capable readers skip it in "
+        "the reading-flow count"
+    )
+    assert spine_ids[1] == "colophon", (
+        f"expected colophon right after cover, got {spine_ids[1]}"
+    )
+
+
+def test_cover_xhtml_and_image_are_both_manifest_and_reachable(tmp_path: Path):
+    """Regression for the 2026-07 release: `set_cover` adds cover.xhtml
+    to the manifest but ebooklib does NOT auto-splice it into the spine
+    when we assign book.spine explicitly. Leaving cover.xhtml
+    manifest-only crashed CrossPoint 1.4.1 on file open (the reader
+    resolves `<meta name="cover">` -> cover-image -> cover.xhtml and
+    aborts when the xhtml isn't a spine item). Pin cover.xhtml as a
+    spine item so the reader can navigate to it."""
+    out = tmp_path / "cover_reachable.epub"
+    articles = [_art(with_image=False) for _ in range(3)]
+    build_epub(articles=articles, output_path=out, meta=_meta(),
+               with_images=False)
+
+    with zipfile.ZipFile(out) as zf:
+        opf = zf.read("EPUB/content.opf").decode("utf-8")
+
+    assert re.search(r'<item[^>]*\bproperties="cover-image"', opf), (
+        "cover image must be declared with properties=\"cover-image\""
+    )
+    assert re.search(r'<item[^>]*\bhref="cover\.xhtml"[^>]*\bid="cover"', opf) \
+        or re.search(r'<item[^>]*\bid="cover"[^>]*\bhref="cover\.xhtml"', opf), (
+        "cover.xhtml wrapper must be in the manifest"
+    )
+    spine_ids = re.findall(r'<itemref[^>]*\bidref="([^"]+)"', opf)
+    assert "cover" in spine_ids, (
+        f"cover.xhtml must be a spine item so simple readers can navigate "
+        f"to it on file open. spine={spine_ids}"
     )
 
 
