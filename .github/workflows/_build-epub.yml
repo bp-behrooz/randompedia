@@ -130,20 +130,26 @@ jobs:
       # One artifact per EPUB. Uploading both text and images under a
       # single artifact name would collide (upload-artifact@v4+ treats
       # the name as the artifact identity, not a folder), so we split
-      # them into two uploads with distinct names. This also makes the
-      # run page show all six EPUBs individually.
+      # them into two uploads. This also makes the run page show all
+      # six EPUBs individually.
+      #
+      # archive: false disables the outer zip wrapper GitHub normally adds,
+      # so the artifact downloads as the file itself. EPUBs are already zip
+      # containers, so this gives users a working .epub directly instead of
+      # a .zip they have to extract first. Requires exactly one file per
+      # upload, and the 'name' input is ignored — the filename is used.
       - name: Upload text EPUB
         uses: actions/upload-artifact@v7
         with:
-          name: randompedia-${{ inputs.label }}-text
           path: out/randompedia-${{ inputs.label }}-text.epub
+          archive: false
           if-no-files-found: error
           retention-days: 30
 
       - name: Upload images EPUB
         uses: actions/upload-artifact@v7
         with:
-          name: randompedia-${{ inputs.label }}-images${{ inputs.include_fair_use && '-fairuse' || '' }}
-          path: out/randompedia-${{ inputs.label }}-images*.epub
+          path: out/randompedia-${{ inputs.label }}-images${{ inputs.include_fair_use && '-fairuse' || '' }}.epub
+          archive: false
           if-no-files-found: error
           retention-days: 30
