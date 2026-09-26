@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   touch:
-    if: github.repository == 'everplays/randompedia'
+    if: github.repository == 'bp-behrooz/randompedia'
     name: touch cache
     runs-on: ubuntu-latest
     steps:
